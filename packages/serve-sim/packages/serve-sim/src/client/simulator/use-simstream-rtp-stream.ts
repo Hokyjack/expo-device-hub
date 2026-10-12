@@ -16,6 +16,12 @@ export interface SimstreamRtpStream {
 }
 
 const RETRY_DELAY_MS = 1000;
+const USE_WEBSOCKET = "Choose the WebSocket transport in Stream settings.";
+
+/** True if an SDP answer kept a video codec the bridge offered (it only offers H.264). */
+function answerHasH264(sdp: string): boolean {
+  return /^a=rtpmap:\d+ H264\//im.test(sdp);
+}
 
 /** Posts each encoded frame's RTP timestamp as it arrives (Safari's RTCRtpScriptTransform). */
 const ACK_WORKER = `onrtctransform = ({ transformer }) => {
@@ -108,26 +114,52 @@ export function useSimstreamRtpStream({ url, enabled, iceServers }: UseSimstream
           if (document.hidden) send({ t: "pause" });
         };
       };
-      socket.onmessage = async ({ data }) => {
-        const message = JSON.parse(data as string) as {
-          t: string; sdp?: string; type?: RTCSdpType; candidate?: string; mid?: string; message?: string;
-        };
-        if (message.t === "sdp" && message.sdp && message.type) {
-          await peer.setRemoteDescription({ type: message.type, sdp: message.sdp });
-          if (message.type === "offer") {
-            await peer.setLocalDescription(await peer.createAnswer());
-            socket.send(JSON.stringify({ t: "sdp", sdp: peer.localDescription!.sdp, type: peer.localDescription!.type }));
+      // A newer connection (or unmount) retires this one; its pending negotiation must not touch state.
+      const current = () => !stopped && pc === peer;
+      /** Ends this connection for good: retrying would fail the same way. */
+      const fail = (error: string) => {
+        if (!current()) return;
+        teardown();
+        setState({ stream: null, peerConnection: null, error });
+      };
+      const negotiate = async (description: RTCSessionDescriptionInit) => {
+        try {
+          await peer.setRemoteDescription(description);
+          if (!current() || description.type !== "offer") return;
+          const answer = await peer.createAnswer();
+          if (!current()) return;
+          if (!answerHasH264(answer.sdp ?? "")) {
+            fail(`simstream RTP: this browser's WebRTC can't play H.264 (Electron's can't). ${USE_WEBSOCKET}`);
+            return;
           }
+          await peer.setLocalDescription(answer);
+          if (!current()) return;
+          socket.send(JSON.stringify({ t: "sdp", sdp: peer.localDescription!.sdp, type: peer.localDescription!.type }));
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          fail(`simstream RTP: couldn't set up the stream (${reason}). ${USE_WEBSOCKET}`);
+        }
+      };
+      socket.onmessage = async ({ data }) => {
+        let message: { t?: string; sdp?: string; type?: RTCSdpType; candidate?: string; mid?: string; message?: string };
+        try {
+          message = JSON.parse(data as string) as typeof message;
+        } catch {
+          fail(`simstream RTP: the server sent a malformed message. ${USE_WEBSOCKET}`);
+          return;
+        }
+        if (message.t === "sdp" && message.sdp && message.type) {
+          await negotiate({ type: message.type, sdp: message.sdp });
         } else if (message.t === "cand" && message.candidate) {
           await peer.addIceCandidate({ candidate: message.candidate, sdpMid: message.mid }).catch(() => {});
-        } else if (message.t === "error") {
+        } else if (message.t === "error" && current()) {
           setState({ stream: null, peerConnection: null, error: `simstream RTP: ${message.message}` });
         }
       };
       const reconnect = () => {
-        if (stopped || pc !== peer) return;
+        if (!current()) return;
         teardown();
-        setState((current) => current.error ? current : { stream: null, peerConnection: null, error: null });
+        setState((previous) => previous.error ? previous : { stream: null, peerConnection: null, error: null });
         retryTimer = setTimeout(connect, RETRY_DELAY_MS);
       };
       socket.onclose = reconnect;

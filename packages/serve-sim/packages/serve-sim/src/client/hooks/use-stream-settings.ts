@@ -23,7 +23,7 @@ function initialControlSettings(initialSettings: StreamSettings | undefined): St
   if (settings.transport !== "http" || settings.httpCodec !== "auto") return settings;
   try {
     const stored = window.localStorage.getItem(HTTP_CODEC_STORAGE_KEY);
-    if (stored === "auto" || stored === "mjpeg" || stored === "h264") {
+    if (stored === "auto" || stored === "mjpeg" || stored === "h264" || stored === "simstream") {
       return mergeStreamControlSettings(settings, { httpCodec: stored });
     }
   } catch {

@@ -1,6 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import type { AddressInfo } from "net";
+import { DescriptionType, PeerConnection } from "node-datachannel";
+import { WebSocket, WebSocketServer } from "ws";
 import { iceServerUrls } from "../simstream-ice";
-import { asksForKeyframe, parameterSets } from "../simstream-rtp";
+import { asksForKeyframe, bridgeSimstreamRtp, parameterSets, parseControlMessage, parseSignalMessage } from "../simstream-rtp";
 
 describe("simstream RTP bridge helpers", () => {
   test("turns an avcC box into length-prefixed SPS and PPS", () => {
@@ -33,4 +36,106 @@ describe("simstream RTP bridge helpers", () => {
     ]);
     expect(iceServerUrls(undefined)).toEqual([]);
   });
+});
+
+describe("simstream RTP bridge messages", () => {
+  test("accepts only well-formed signaling messages", () => {
+    expect(parseSignalMessage('{"t":"sdp","sdp":"v=0","type":"answer"}')).toEqual({ t: "sdp", sdp: "v=0", type: "answer" as DescriptionType });
+    expect(parseSignalMessage('{"t":"cand","candidate":"candidate:1"}')).toEqual({ t: "cand", candidate: "candidate:1", mid: "0" });
+    expect(parseSignalMessage('{"t":"cand","candidate":"candidate:1","mid":"video"}')).toEqual({ t: "cand", candidate: "candidate:1", mid: "video" });
+    for (const text of ["{", "null", "[]", '"sdp"', '{"t":"sdp","sdp":"v=0"}', '{"t":"sdp","sdp":"v=0","type":"bogus"}', '{"t":"sdp","sdp":1,"type":"answer"}', '{"t":"cand"}', '{"t":"cand","candidate":"c","mid":3}', '{"t":"other"}']) {
+      expect(parseSignalMessage(text)).toBeNull();
+    }
+  });
+
+  test("passes control messages to the engine and maps only numeric acks", () => {
+    expect(parseControlMessage('{"t":"ack","rtp":90000}')).toEqual({ ack: 90000 });
+    expect(parseControlMessage('{"t":"pause"}')).toEqual({ engine: '{"t":"pause"}' });
+    for (const text of ["{", "null", "[]", "{}", '{"t":1}', '{"t":"ack"}', '{"t":"ack","rtp":"1"}', '{"t":"ack","rtp":1.5}']) {
+      expect(parseControlMessage(text)).toBeNull();
+    }
+  });
+});
+
+describe("simstream RTP bridge isolation", () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0)) cleanup();
+  });
+
+  /** A signaling server that bridges every connection, as the relay does; the engine port is unused. */
+  async function startRelay() {
+    const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    server.on("connection", (signal) => bridgeSimstreamRtp(signal, 1, []));
+    cleanups.push(() => server.close());
+    return `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  }
+
+  /** A viewer's signaling socket that has received the bridge's offer. */
+  async function connectViewer(url: string) {
+    const socket = new WebSocket(url);
+    cleanups.push(() => socket.terminate());
+    const messages: Array<{ t: string; sdp?: string; type?: string; candidate?: string; mid?: string; message?: string }> = [];
+    const closed = new Promise<number>((resolve) => socket.once("close", (code) => resolve(code)));
+    const offer = new Promise<void>((resolve) => socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as (typeof messages)[number];
+      messages.push(message);
+      if (message.t === "sdp") resolve();
+    }));
+    await offer;
+    return { socket, messages, closed };
+  }
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+
+  test("a malformed signaling message closes only its own bridge", async () => {
+    const url = await startRelay();
+    const broken = await connectViewer(url);
+    const other = await connectViewer(url);
+    broken.socket.send("{");
+    expect(await broken.closed).toBe(1008);
+    expect(broken.messages.at(-1)).toEqual({ t: "error", message: "malformed signaling message" });
+    await settle();
+    expect(other.socket.readyState).toBe(WebSocket.OPEN);
+    // The relay still bridges new viewers.
+    const next = await connectViewer(url);
+    expect(next.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  test("an SDP the peer connection rejects closes only its own bridge", async () => {
+    const url = await startRelay();
+    const broken = await connectViewer(url);
+    const other = await connectViewer(url);
+    broken.socket.send(JSON.stringify({ t: "sdp", sdp: "not an sdp", type: "answer" }));
+    expect(await broken.closed).toBe(1008);
+    expect(broken.messages.at(-1)?.t).toBe("error");
+    await settle();
+    expect(other.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  test("a malformed control message closes only its own bridge", async () => {
+    const url = await startRelay();
+    const other = await connectViewer(url);
+    const broken = await connectViewer(url);
+    // Answer the bridge as a browser would, then send garbage on its "ctl" data channel.
+    const browser = new PeerConnection("browser", { iceServers: [] });
+    cleanups.push(() => browser.close());
+    browser.onLocalDescription((sdp, type) => broken.socket.send(JSON.stringify({ t: "sdp", sdp, type })));
+    browser.onLocalCandidate((candidate, mid) => broken.socket.send(JSON.stringify({ t: "cand", candidate, mid })));
+    browser.onDataChannel((channel) => channel.onOpen(() => channel.sendMessage("{")));
+    broken.socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { t: string; candidate?: string; mid?: string };
+      if (message.t === "cand") browser.addRemoteCandidate(message.candidate!, message.mid!);
+    });
+    const offer = broken.messages.find((message) => message.t === "sdp")!;
+    browser.setRemoteDescription(offer.sdp!, offer.type as DescriptionType);
+    for (const message of broken.messages) {
+      if (message.t === "cand") browser.addRemoteCandidate(message.candidate!, message.mid!);
+    }
+    expect(await broken.closed).toBe(1008);
+    expect(broken.messages.at(-1)).toEqual({ t: "error", message: "malformed control message" });
+    await settle();
+    expect(other.socket.readyState).toBe(WebSocket.OPEN);
+  }, 10_000);
 });
