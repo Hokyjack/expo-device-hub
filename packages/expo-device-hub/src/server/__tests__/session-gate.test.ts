@@ -242,6 +242,7 @@ describe('the Hub under a session token', () => {
       expect([path, allowed?.status]).toEqual([path, 500]);
       expect([path, allowed?.headers.get('access-control-allow-origin')]).toEqual([path, PAGE]);
       expect(await allowed?.json()).toEqual({ ok: false, error: 'Internal Server Error' });
+      expect([path, allowed?.headers.get('content-security-policy')]).toEqual([path, FRAME_POLICY]);
       expect([path, other?.headers.get('access-control-allow-origin')]).toEqual([path, null]);
     }
   });

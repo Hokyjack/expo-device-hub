@@ -207,9 +207,11 @@ export default async function handler(request: Request): Promise<Response | null
     if (!isSimPath(pathname) && !isEmuPath(pathname)) throw error;
     // Each backend answers its own route errors; this covers a failure around them.
     console.error(error);
-    return Response.json(
-      { ok: false, error: 'Internal Server Error' },
-      { status: 500, headers: backendCorsHeaders(request, pathname) },
+    return withFramePolicy(
+      Response.json(
+        { ok: false, error: 'Internal Server Error' },
+        { status: 500, headers: backendCorsHeaders(request, pathname) },
+      ),
     );
   }
 }
