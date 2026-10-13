@@ -1,5 +1,14 @@
 # @expo/serve-sim
 
+## 0.8.0
+
+### Minor Changes
+
+- aafcc8c: Add authenticated app stop and deep-link actions alongside installed-app launch.
+- 8019f7f: Add authenticated app data-container lookup, file listing, reading and single-file removal.
+- 7633754: Copy staged uploads into app data storage with bounded reads and atomic per-file writes. Each server now stages uploads in its own folder.
+- aafcc8c: Add an authenticated app launch action so a running serve-sim session can launch an app installed by its controller.
+
 ## 0.7.0
 
 ### Minor Changes
