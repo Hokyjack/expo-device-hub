@@ -247,7 +247,7 @@ describe('the Hub under a session token', () => {
     }
   });
 
-  test('names no other origin on a refusal, and none on its own routes', async () => {
+  test('names no other origin on a refusal, and a --cors-origin page on its own routes too', async () => {
     const other = await request('/vendor/serve-emu/api/devices', { headers: { Origin: 'https://elsewhere.example' } });
     const own = await request('/api/devices', { headers: { Origin: PAGE } });
 
@@ -255,7 +255,24 @@ describe('the Hub under a session token', () => {
     expect(other?.headers.get('access-control-allow-origin')).toBeNull();
     expect(other?.headers.get('vary')).toBe('Origin');
     expect(own?.status).toBe(401);
-    expect(own?.headers.get('access-control-allow-origin')).toBeNull();
+    expect(own?.headers.get('access-control-allow-origin')).toBe(PAGE);
+  });
+
+  // The expo.dev preview probes `/healthz`, and a page may list devices, from its own origin.
+  test("lets a --cors-origin page read the Hub's own routes, and no other page", async () => {
+    for (const path of ['/healthz', '/readyz']) {
+      const allowed = await request(path, { headers: { Origin: PAGE } });
+      const other = await request(path, { headers: { Origin: 'https://elsewhere.example' } });
+      expect([path, allowed?.status, allowed?.headers.get('access-control-allow-origin')]).toEqual([path, 200, PAGE]);
+      expect([path, other?.headers.get('access-control-allow-origin'), other?.headers.get('vary')]).toEqual([
+        path,
+        null,
+        'Origin',
+      ]);
+    }
+    const devices = await request('/api/devices', { headers: { Origin: PAGE, Authorization: `Bearer ${TOKEN}` } });
+    expect(devices?.status).toBe(200);
+    expect(devices?.headers.get('access-control-allow-origin')).toBe(PAGE);
   });
 
   // serve-sim allows any loopback page; serve-emu only one that calls a Hub on a loopback host.
@@ -333,13 +350,21 @@ describe('the Hub under a session token', () => {
   });
 
   // A preflight cannot carry the token. Each backend answers or refuses one before its own gate.
-  test('passes a backend preflight through without a credential, and refuses one for the Hub', async () => {
+  test('passes a backend preflight through without a credential, and answers one for the Hub itself', async () => {
     expect((await request('/vendor/serve-sim/api', { method: 'OPTIONS' }))?.status).toBe(204);
     expect((await request('/vendor/serve-emu/webrtc/stats', { method: 'OPTIONS' }))?.status).toBe(204);
 
     expect(simRequests.map((r) => r.headers.get('authorization'))).toEqual([null]);
     expect(emuRequests.map((r) => r.headers.get('authorization'))).toEqual([null]);
-    expect((await request('/api/devices', { method: 'OPTIONS' }))?.status).toBe(401);
+
+    const hub = await request('/api/devices', {
+      method: 'OPTIONS',
+      headers: { Origin: PAGE, 'Access-Control-Request-Headers': 'authorization' },
+    });
+    expect(hub?.status).toBe(204);
+    expect(hub?.headers.get('access-control-allow-origin')).toBe(PAGE);
+    expect(hub?.headers.get('access-control-allow-headers')).toContain('Authorization');
+    expect(deviceListings).toBe(0);
   });
 
   // serve-sim takes recording control only with a bearer, never with its cookie.
