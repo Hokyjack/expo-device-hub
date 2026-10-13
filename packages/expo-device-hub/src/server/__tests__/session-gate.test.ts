@@ -472,6 +472,32 @@ describe('the Hub under a session token', () => {
     expect(emuAttached).toEqual([]);
   });
 
+  // A Hub without --require-token has no token check, so the origin check is all that stands
+  // between another site's page and device input.
+  test('checks the origin on every socket of a Hub without a token too', () => {
+    const ungated = server.webSocketHandlersFor(undefined) as Record<
+      string,
+      (socket: unknown, request: Request) => void
+    >;
+    const open = (route: string, origin?: string) => {
+      const socket = fakeSocket();
+      ungated[route]!(socket, new Request(`${ORIGIN}${route}`, { headers: origin ? { origin } : {} }));
+      return socket.closed;
+    };
+
+    for (const route of Object.keys(ungated)) {
+      expect([route, open(route, 'https://elsewhere.example')]).toEqual([
+        route,
+        { code: 1008, reason: 'Origin not allowed' },
+      ]);
+    }
+    expect(simSockets).toEqual([]);
+    expect(emuAttached).toEqual([]);
+    for (const origin of [ORIGIN, PAGE, undefined]) {
+      expect([origin, open('/vendor/serve-emu/ws', origin)]).toEqual([origin, null]);
+    }
+  });
+
   test("opens a socket from the Hub's own page, a --cors-origin page, or a client without Origin", () => {
     const token = { 'sec-websocket-protocol': `serve-emu.token.${TOKEN}` };
     for (const origin of [ORIGIN, PAGE, undefined]) {

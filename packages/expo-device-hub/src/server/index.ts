@@ -387,9 +387,9 @@ type GatedSocket = {
  * a token, and then the token before its handler.
  */
 function gatedSocket<Socket extends GatedSocket>(
-  handle: (socket: Socket, request: Request) => void
+  handle: (socket: Socket, request: Request) => void,
+  token: string | undefined,
 ): (socket: Socket, request: Request) => void {
-  const token = SESSION_TOKEN;
   return (socket, request) => {
     // `ws` emits `error` when a peer breaks the protocol, even while the socket closes, and an
     // error with no listener throws. Without this, a refused client could stop the Hub.
@@ -410,13 +410,18 @@ function gatedSocket<Socket extends GatedSocket>(
   };
 }
 
-export const webSocketHandlers = {
-  [DEVICES_WEBSOCKET_ROUTE]: gatedSocket(deviceListWebSocketHandler),
-  [ARGENT_INTERACTIONS_WEBSOCKET_ROUTE]: gatedSocket(argentInteractionWebSocketHandler),
-  [`${SIM_PREFIX}/exec-ws`]: gatedSocket(simWebSocketHandler),
-  [`${SIM_PREFIX}/helper/ws`]: gatedSocket(simWebSocketHandler),
-  [`${EMU_PREFIX}/ws`]: gatedSocket(emuWebSocketHandler),
-};
+/** The socket routes for a session token, or for none; the Hub uses its own below. */
+export function webSocketHandlersFor(token: string | undefined) {
+  return {
+    [DEVICES_WEBSOCKET_ROUTE]: gatedSocket(deviceListWebSocketHandler, token),
+    [ARGENT_INTERACTIONS_WEBSOCKET_ROUTE]: gatedSocket(argentInteractionWebSocketHandler, token),
+    [`${SIM_PREFIX}/exec-ws`]: gatedSocket(simWebSocketHandler, token),
+    [`${SIM_PREFIX}/helper/ws`]: gatedSocket(simWebSocketHandler, token),
+    [`${EMU_PREFIX}/ws`]: gatedSocket(emuWebSocketHandler, token),
+  };
+}
+
+export const webSocketHandlers = webSocketHandlersFor(SESSION_TOKEN);
 
 function filterBooted(list: HubDeviceList): HubDeviceList {
   return {
