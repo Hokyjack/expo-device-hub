@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { answerThrownErrors, connectToFetch } from "../connect-to-fetch";
 import { simMiddleware } from "../middleware";
 
 const OFFER = "http://localhost/.sim/helper/00000000-0000-4000-8000-000000000000/webrtc/offer";
@@ -69,6 +70,23 @@ describe("CORS preflight", () => {
 });
 
 describe("CORS policy", () => {
+  // The middleware sets its CORS headers before any route runs; a route that throws keeps them.
+  test("keeps the headers on a route that throws, and names no detail", async () => {
+    const route = answerThrownErrors(async (_req, res) => {
+      res.setHeader("Access-Control-Allow-Origin", "https://expo.dev");
+      res.setHeader("Vary", "Origin");
+      throw new Error("/private/state.json: EACCES");
+    });
+
+    const response = await connectToFetch(route, new Request("http://localhost/.sim/api"));
+
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("access-control-allow-origin")).toBe("https://expo.dev");
+    expect(response?.headers.get("vary")).toBe("Origin");
+    expect(await response?.text()).toBe("Internal Server Error");
+  });
+
+
   test("keeps the headers on a gated 401, so the browser can read the status", async () => {
     const middleware = simMiddleware({
       basePath: "/.sim",
