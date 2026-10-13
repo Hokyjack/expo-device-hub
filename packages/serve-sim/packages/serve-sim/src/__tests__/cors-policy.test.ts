@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { answerThrownErrors, connectToFetch } from "../connect-to-fetch";
 import { simMiddleware } from "../middleware";
 
 const OFFER = "http://localhost/.sim/helper/00000000-0000-4000-8000-000000000000/webrtc/offer";
@@ -70,22 +69,24 @@ describe("CORS preflight", () => {
 });
 
 describe("CORS policy", () => {
-  // The middleware sets its CORS headers before any route runs; a route that throws keeps them.
+  // The middleware sets its CORS headers before any route runs; a route that throws keeps them. A
+  // malformed device in a helper path makes the real helper route throw.
   test("keeps the headers on a route that throws, and names no detail", async () => {
-    const route = answerThrownErrors(async (_req, res) => {
-      res.setHeader("Access-Control-Allow-Origin", "https://expo.dev");
-      res.setHeader("Vary", "Origin");
-      throw new Error("/private/state.json: EACCES");
-    });
+    const middleware = simMiddleware({ basePath: "/.sim", proxyHelpers: true, corsOrigins: ["https://expo.dev"] });
+    const throwing = (origin: string) =>
+      middleware(new Request("http://localhost/.sim/helper/%E0%A4%A/stream.mjpeg", { headers: { origin } }));
 
-    const response = await connectToFetch(route, new Request("http://localhost/.sim/api"));
+    const allowed = await throwing("https://expo.dev");
+    const other = await throwing("https://elsewhere.example");
 
-    expect(response?.status).toBe(500);
-    expect(response?.headers.get("access-control-allow-origin")).toBe("https://expo.dev");
-    expect(response?.headers.get("vary")).toBe("Origin");
-    expect(await response?.text()).toBe("Internal Server Error");
+    expect(allowed?.status).toBe(500);
+    expect(allowed?.headers.get("access-control-allow-origin")).toBe("https://expo.dev");
+    expect(allowed?.headers.get("vary")).toBe("Origin");
+    expect(await allowed?.text()).toBe("Internal Server Error");
+    expect(other?.status).toBe(500);
+    expect(other?.headers.get("access-control-allow-origin")).toBeNull();
+    expect(other?.headers.get("vary")).toBe("Origin");
   });
-
 
   test("keeps the headers on a gated 401, so the browser can read the status", async () => {
     const middleware = simMiddleware({
