@@ -1775,7 +1775,7 @@ function printStartupError(message: string, quiet: boolean): void {
 
 async function serve(
   servePort: number,
-  devices: string[],
+  targetDevices: string[],
   portExplicit: boolean,
   host: string,
   options: {
@@ -1797,20 +1797,6 @@ async function serve(
     printStartupError(message, quiet);
     process.exit(1);
   };
-  // Boot the target simulators; the preview server streams them in-process
-  // (no spawned helper). Sessions are created lazily on the first stream request.
-  let targetDevices: string[];
-  try {
-    targetDevices = resolveTargetDevices(devices);
-    if (!quiet && devices.length === 0 && readAllStates().length === 0) {
-      console.log("Starting simulator stream...");
-    }
-    for (const udid of targetDevices) {
-      await ensureBooted(udid);
-    }
-  } catch (err) {
-    return failStartup(err instanceof Error ? err.message : String(err));
-  }
   const targetDevice = targetDevices[0];
 
   const capture = await import("./capture");
