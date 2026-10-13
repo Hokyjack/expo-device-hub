@@ -51,6 +51,8 @@ mock.module('../../../vendor/serve-sim/dist/middleware.js', () => ({
         simRequests.push(request);
         if (request.method === 'OPTIONS') return preflight(request);
         if (new URL(request.url).pathname.endsWith('/throws')) throw new Error('sim failed');
+        // serve-sim passes a path it does not route on to its host.
+        if (new URL(request.url).pathname.endsWith('/unrouted')) return undefined;
         // serve-sim names its own frame policy on its pages.
         if (new URL(request.url).pathname.endsWith('/framed')) {
           return new Response('sim', { headers: { 'Content-Security-Policy': "frame-ancestors 'self' https://a.dev" } });
@@ -266,14 +268,23 @@ describe('the Hub under a session token', () => {
     expect(other?.headers.get('vary')).toBe('Origin');
   });
 
-  // An unknown path falls through to the host (the CLI or Expo), which serves static files or a 404
-  // without CORS headers. A page can preflight it, but cannot read that 404.
-  test('leaves an unknown path to its host after answering its preflight', async () => {
+  // Otherwise the host (the CLI or Expo) would answer a 404 without CORS headers, which a page that
+  // passed the preflight could not read.
+  test('answers an unknown Hub or backend path with a 404 a --cors-origin page can read', async () => {
+    const authorized = { Authorization: `Bearer ${TOKEN}`, Origin: PAGE };
     const preflight = await request('/api/unknown', { method: 'OPTIONS', headers: { Origin: PAGE } });
-    const missing = await request('/api/unknown', { headers: { Authorization: `Bearer ${TOKEN}`, Origin: PAGE } });
-
     expect(preflight?.status).toBe(204);
-    expect(missing).toBeNull();
+
+    for (const path of ['/api/unknown', '/vendor/serve-sim/unrouted']) {
+      const missing = await request(path, { headers: authorized });
+      expect([path, missing?.status]).toEqual([path, 404]);
+      expect([path, missing?.headers.get('access-control-allow-origin')]).toEqual([path, PAGE]);
+      expect(await missing?.json()).toEqual({ ok: false, error: 'Not Found' });
+    }
+  });
+
+  test('leaves a static file path to its host', async () => {
+    expect(await request('/_expo/static/js/web/index.js', { headers: SAME_ORIGIN })).toBeNull();
   });
 
   test('names no other origin on a refusal, and a --cors-origin page on its own routes too', async () => {

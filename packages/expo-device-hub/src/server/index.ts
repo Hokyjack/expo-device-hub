@@ -62,6 +62,8 @@ import { listNewDeviceOptions } from './sim-options';
 import { SERVER_TRANSPORT } from './transport';
 export { startAndroidScreenRecording, shutdownAndroid } from './serve-emu';
 
+/** Every Hub API route lives under this prefix; the rest of a path is a static file. */
+const HUB_API_PREFIX = '/api/';
 const DEVICES_ROUTE = '/api/devices';
 const SHUTDOWN_DEVICE_ROUTE = '/api/devices/shutdown';
 const REMOVE_DEVICE_ROUTE = '/api/devices/remove';
@@ -223,10 +225,21 @@ export default async function handler(request: Request): Promise<Response | null
   if (gated instanceof Response) return gated;
   try {
     const response = withFramePolicy(await routeRequest(gated));
+    if (!response) {
+      // A path the Hub or a backend owns but does not route still answers here, with its CORS
+      // headers, so an allowed page can tell a missing route from a network error. Other paths
+      // fall through to the host, which serves the Hub's static files.
+      return isBackend || pathname.startsWith(HUB_API_PREFIX)
+        ? withFramePolicy(
+            Response.json(
+              { ok: false, error: 'Not Found' },
+              { status: 404, headers: corsHeadersForPath(request, pathname) },
+            ),
+          )
+        : null;
+    }
     // The backends name their own policy; the Hub's routes get serve-sim's.
-    return response && !isBackend
-      ? withCorsHeaders(response, corsHeadersForPath(request, pathname))
-      : response;
+    return isBackend ? response : withCorsHeaders(response, corsHeadersForPath(request, pathname));
   } catch (error) {
     // Each backend answers its own route errors; this covers a failure around them and the Hub's
     // own routes, with the same headers.
