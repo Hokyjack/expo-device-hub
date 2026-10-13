@@ -1,5 +1,19 @@
 # expo-device-hub
 
+## 0.16.0
+
+### Minor Changes
+
+- 5317c57: The CLI now records the metadata of each running Hub in `server-<port>.json` in `$TMPDIR/expo-device-hub` (or `EXPO_DEVICE_HUB_STATE_DIR`).
+
+### Patch Changes
+
+- 3e3c70a: Find the Android SDK in predefined search paths when `ANDROID_HOME` is not set.
+- cf4c0b2: Advance the iOS Rotate button through requested orientations while screen readback is delayed or an app declines a pose.
+- c49d95a: Add a `/healthz` endpoint that answers `200 {"status":"ok"}` without the session token.
+- cf4c0b2: Wait for helper admission before sending iOS input when the helper advertises `inputAdmission`. Legacy helpers continue accepting input when the socket opens.
+- 8450057: Keep regular iPhone preview rotation when returning to portrait-only apps such as Home.
+
 ## 0.15.3
 
 ### Patch Changes

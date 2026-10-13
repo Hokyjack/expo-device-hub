@@ -1,5 +1,26 @@
 # @expo/serve-sim
 
+## 0.7.0
+
+### Minor Changes
+
+- 782fe97: Forward captured traffic through an explicit HTTP proxy with `--network-capture-proxy`,
+  including EAS local egress. Basic proxy credentials are supported
+  and kept out of capture metadata and the mitmproxy command line. Unconfigured capture goes direct.
+- 313ab2e: Accept a colon-separated `SERVE_SIM_ADDITIONAL_DYLIBS` environment variable for simulator boot and app launches alongside the capability loader.
+- 3d22378: Choose what network capture keeps from the tools panel. A gear menu next to the capture toggle selects headers, query values, request bodies, and response bodies. A change applies to a running capture without a proxy restart, and the `capture.enable`, `capture.reboot`, and new `capture.fields` host actions accept the same field list.
+- dd64572: `serve-sim hinge` with no position prints the foldable simulator's hinge angle, pose, physical orientation, and Table Mode as JSON. After a server restart, serve-sim reads the native hinge angle and restores the last pose, orientation, and Table Mode when the saved angle matches.
+- d7349a7: Add --install-app-path to install a local .app after boot and before any requested startup launch. Installation and --launch-app-identifier are independent, so callers can install without launching or install one app and launch another. Validate the app before touching a device, and report installation and validation failures as JSON under --quiet.
+
+### Patch Changes
+
+- f76c5ca: Wait for simulator input admission before sending short CLI input commands, so a full input pool cannot be reported as a successful tap.
+- 8450057: Keep regular iPhone preview rotation when returning to portrait-only apps such as Home.
+- cf984cc: Avoid repeating simulator initialization before preview startup.
+- b7fb493: Stop reading and re-wiring a simulator's framebuffer while the simulator is not booted. A capture left open after a shutdown called into the dead simulator once a second, which leaked memory and, over days, CPU.
+- e4e11f5: Require successful Simulator boot completion before launching an installed app or reporting readiness. In the foreground CLI, report boot, launch and deep-link startup failures as JSON under --quiet.
+- e49a254: Keep toast dismissal timers running after touch taps on screenshot and other preview notifications, while preserving mouse hover pauses.
+
 ## 0.6.3
 
 ### Patch Changes
