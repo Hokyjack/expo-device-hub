@@ -34,6 +34,8 @@ const emuAttached: Array<{ request?: Request }> = [];
 let simOptions: Record<string, unknown> = {};
 let emuOptions: Record<string, unknown> = {};
 let deviceListings = 0;
+// Makes the Hub's own device list throw, as a failing `simctl` or `adb` would.
+let deviceListingFails = false;
 
 mock.module('../../../vendor/serve-sim/dist/middleware.js', () => ({
   simMiddleware: (options: Record<string, unknown>) => {
@@ -101,6 +103,7 @@ mock.module('../../../vendor/serve-emu/dist/middleware.js', () => ({
 mock.module('../devices', () => ({
   listDevices: async () => {
     deviceListings++;
+    if (deviceListingFails) throw new Error('/private/var/devices.json: EACCES');
     return { simulators: [], emulators: [], errors: [] };
   },
   listAndroidEmulators: async () => [],
@@ -127,6 +130,7 @@ beforeEach(() => {
   emuUpgrades.length = 0;
   emuAttached.length = 0;
   deviceListings = 0;
+  deviceListingFails = false;
 });
 
 const request = (path: string, init?: RequestInit) =>
@@ -245,6 +249,31 @@ describe('the Hub under a session token', () => {
       expect([path, allowed?.headers.get('content-security-policy')]).toEqual([path, FRAME_POLICY]);
       expect([path, other?.headers.get('access-control-allow-origin')]).toEqual([path, null]);
     }
+  });
+
+  test("answers a Hub route that throws with a 500 that a --cors-origin page can read", async () => {
+    deviceListingFails = true;
+    const authorized = { Authorization: `Bearer ${TOKEN}` };
+
+    const allowed = await request('/api/devices', { headers: { ...authorized, Origin: PAGE } });
+    const other = await request('/api/devices', { headers: { ...authorized, Origin: 'https://elsewhere.example' } });
+
+    expect(allowed?.status).toBe(500);
+    expect(allowed?.headers.get('access-control-allow-origin')).toBe(PAGE);
+    expect(await allowed?.json()).toEqual({ ok: false, error: 'Internal Server Error' });
+    expect(other?.status).toBe(500);
+    expect(other?.headers.get('access-control-allow-origin')).toBeNull();
+    expect(other?.headers.get('vary')).toBe('Origin');
+  });
+
+  // An unknown path falls through to the host (the CLI or Expo), which serves static files or a 404
+  // without CORS headers. A page can preflight it, but cannot read that 404.
+  test('leaves an unknown path to its host after answering its preflight', async () => {
+    const preflight = await request('/api/unknown', { method: 'OPTIONS', headers: { Origin: PAGE } });
+    const missing = await request('/api/unknown', { headers: { Authorization: `Bearer ${TOKEN}`, Origin: PAGE } });
+
+    expect(preflight?.status).toBe(204);
+    expect(missing).toBeNull();
   });
 
   test('names no other origin on a refusal, and a --cors-origin page on its own routes too', async () => {
