@@ -33,6 +33,7 @@ describe('parseCliOptions', () => {
       hideSidebar: false,
       hideBootDevice: false,
       requireToken: false,
+      allowAnyHostWhenInsecure: false,
       frameAncestors: [],
       corsOrigins: [],
       help: false,
@@ -287,6 +288,11 @@ describe('parseCliOptions', () => {
     ).toEqual(['https://*.expo.dev', 'https://*.expo.test']);
   });
 
+  test('turns the host check off only with --allow-any-host-when-insecure', () => {
+    expect(parseCliOptions([]).allowAnyHostWhenInsecure).toBe(false);
+    expect(parseCliOptions(['--allow-any-host-when-insecure']).allowAnyHostWhenInsecure).toBe(true);
+  });
+
   test('rejects a --cors-origin that both backends cannot match', () => {
     for (const value of [
       '*',
@@ -368,6 +374,7 @@ describe('parseCliOptions', () => {
       hideSidebar: false,
       hideBootDevice: false,
       requireToken: false,
+      allowAnyHostWhenInsecure: false,
       frameAncestors: [],
       corsOrigins: [],
       help: false,
