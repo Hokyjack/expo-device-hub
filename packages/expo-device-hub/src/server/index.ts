@@ -159,8 +159,31 @@ function isSimRecordingControl(pathname: string): boolean {
  * network error.
  */
 function corsHeadersForPath(request: Request, pathname: string): Record<string, string> {
-  if (isEmuPath(pathname)) return corsHeadersFor(request, emuAllowsOrigin);
-  return corsHeadersFor(request, simAllowsOrigin);
+  return corsHeadersFor(request, originRuleFor(pathname));
+}
+
+function originRuleFor(pathname: string): (origin: URL, request: Request) => boolean {
+  return isEmuPath(pathname) ? emuAllowsOrigin : simAllowsOrigin;
+}
+
+/**
+ * A browser names its page's origin on every upgrade. A page on the Hub's own origin may open a
+ * socket, and so may a page the route's CORS rule allows; a client without `Origin`, such as a CLI,
+ * may too. The token check still runs after this one.
+ */
+function socketOriginAllowed(request: Request): boolean {
+  const header = request.headers.get('origin');
+  if (header === null) return true;
+  let origin: URL;
+  try {
+    origin = new URL(header);
+  } catch {
+    return false;
+  }
+  const target = new URL(request.url);
+  if (origin.host === target.host) return true;
+  const web = origin.protocol === 'http:' || origin.protocol === 'https:';
+  return web && originRuleFor(target.pathname)(origin, request);
 }
 
 /** What a preflight for one of the Hub's own routes may ask for, as serve-sim's answer names. */
@@ -359,16 +382,26 @@ type GatedSocket = {
   on(event: 'error', listener: () => void): unknown;
 };
 
-/** Upgrades skip the request gate, so each socket route checks the token before its handler. */
+/**
+ * Upgrades skip the request gate, so each socket route checks the page's origin, with or without
+ * a token, and then the token before its handler.
+ */
 function gatedSocket<Socket extends GatedSocket>(
   handle: (socket: Socket, request: Request) => void
 ): (socket: Socket, request: Request) => void {
   const token = SESSION_TOKEN;
-  if (!token) return handle;
   return (socket, request) => {
     // `ws` emits `error` when a peer breaks the protocol, even while the socket closes, and an
-    // error with no listener throws. Without this, a client without the token could stop the Hub.
+    // error with no listener throws. Without this, a refused client could stop the Hub.
     socket.on('error', () => socket.close());
+    if (!socketOriginAllowed(request)) {
+      socket.close(1008, 'Origin not allowed');
+      return;
+    }
+    if (!token) {
+      handle(socket, request);
+      return;
+    }
     if (!authorizeUpgrade(request, token, TOKEN_SUBPROTOCOL_PREFIXES)) {
       socket.close(1008, 'Unauthorized');
       return;
