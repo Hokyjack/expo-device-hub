@@ -198,6 +198,44 @@ describe('the Hub under a session token', () => {
     }
   });
 
+  // Another site's page can send a form-like POST without a preflight, so the token alone does not
+  // stop it. The origin check runs first, with or without a token, and before any route.
+  test('refuses a state change from a page it does not allow, before any route runs', async () => {
+    const post = (path: string, origin?: string, extra: Record<string, string> = {}) =>
+      request(path, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain',
+          Authorization: `Bearer ${TOKEN}`,
+          ...(origin ? { Origin: origin } : {}),
+          ...extra,
+        },
+        // An unknown platform makes a Hub action answer 400 before it touches a device, so this test
+        // can never shut down a real simulator, even if the check it tests breaks.
+        body: '{"platform":"none","id":"all"}',
+      });
+
+    for (const path of ['/api/devices/shutdown', '/vendor/serve-sim/grid/api/shutdown', '/vendor/serve-emu/api/network']) {
+      for (const origin of ['https://elsewhere.example', 'http://localhost:5173']) {
+        const refused = await post(path, origin);
+        expect([path, origin, refused?.status]).toEqual([path, origin, 403]);
+      }
+    }
+    expect(simRequests).toEqual([]);
+    expect(emuRequests).toEqual([]);
+
+    // A --cors-origin page, the Hub's own page, the browser's same-origin mark, and a CLI pass.
+    const allowed: Array<[string | undefined, Record<string, string>]> = [
+      [PAGE, {}],
+      [ORIGIN, {}],
+      ['https://192.168.1.20:3400', { 'Sec-Fetch-Site': 'same-origin' }],
+      [undefined, {}],
+    ];
+    for (const [origin, extra] of allowed) {
+      expect([origin, (await post('/vendor/serve-emu/api/network', origin, extra))?.status]).toEqual([origin, 200]);
+    }
+  });
+
   // A browser sends the preflight first, then the request with the token it has.
   test('lets a --cors-origin page read every kind of token refusal after its preflight', async () => {
     // Each backend's real preflight lets the page send the token header at all.
