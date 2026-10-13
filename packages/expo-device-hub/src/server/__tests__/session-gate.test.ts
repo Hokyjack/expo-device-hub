@@ -459,6 +459,14 @@ describe('the Hub under a session token', () => {
         { code: 1008, reason: 'Origin not allowed' },
       ]);
     }
+    // Another scheme on the Hub's own host is not its page.
+    const host = new URL(ORIGIN).host;
+    for (const origin of [`ws://${host}`, `file://${host}`]) {
+      expect([origin, openSocket('/vendor/serve-emu/ws', { ...credentials, origin }).closed]).toEqual([
+        origin,
+        { code: 1008, reason: 'Origin not allowed' },
+      ]);
+    }
     expect(simSockets).toEqual([]);
     expect(emuUpgrades).toEqual([]);
     expect(emuAttached).toEqual([]);

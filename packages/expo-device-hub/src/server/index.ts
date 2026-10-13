@@ -180,10 +180,10 @@ function socketOriginAllowed(request: Request): boolean {
   } catch {
     return false;
   }
+  if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false;
   const target = new URL(request.url);
   if (origin.host === target.host) return true;
-  const web = origin.protocol === 'http:' || origin.protocol === 'https:';
-  return web && originRuleFor(target.pathname)(origin, request);
+  return originRuleFor(target.pathname)(origin, request);
 }
 
 /** What a preflight for one of the Hub's own routes may ask for, as serve-sim's answer names. */
