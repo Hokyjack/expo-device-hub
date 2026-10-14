@@ -1,16 +1,29 @@
-# ENG-28070 local browser evidence
+# ENG-28070 local Preview evidence
 
-Paired website/serve-sim browser QA captured on October 13, 2026.
-The native source was commit 985aa0f251fb8ace48bdb32c1a75f971dbf917d1.
-The subsequent CLI validation follow-ups do not alter the preview UI.
+## Authenticated preview without its Share dialog
 
-- Private authenticated page: website Share = 1, native Share = 0;
-  the iframe URL had `disableShare=1`.
-- Guest public page: native Share = 1; the iframe URL omitted `disableShare`.
+`private-preview-no-modal.jpg` is an unmodified browser screenshot captured
+on October 13, 2026 using Chrome after the shared T3 Preview automation host
+reported unavailable. Native source: `448963754d3c54c9c52cd39faed8e4349f9237ec`.
+Website source: `3deb4dfd61046cb0c6339f7a84462de17b7b90c4`, whose tree equals
+`c937075bd991da14be84a17f6058165b66cbb85d`, before the later readability cleanup.
 
-These are unmodified screenshots from an owned local iOS Simulator and session.
-Local HTTPS, tunnel, and CSP adapters were used. Hosted EAS orchestration and
-native bearer enforcement were not exercised in this paired check. The fixture,
-owned processes, and device session were cleaned up after QA.
+The actual authenticated page shows Back to session, website Share, and the live
+owned iOS Simulator. Website Share count: 1; native Share count: 0; dialogs: 0.
+The iframe has a token and no `disableShare` query. The foreground native process
+uses `--require-token --disable-share` and omits `--share-url`.
 
-Published by Codex at Gabe's direction for PR #336.
+This is local UI evidence with an owned seeded baseline session and HTTPS,
+tunnel, base-path, CSP, and frame-ancestor adapters. The shared API did not yet
+define the new `publicPreview` field; preference persistence, worker/producer
+integration, and hosted EAS acceptance were not tested. Owned fixture, services,
+device, and browser tabs were cleaned up; shared services were preserved.
+
+## Earlier captures
+
+The PNGs retained in this branch were captured at native `985aa` and show the
+earlier per-page option. That option and its website layer have been removed.
+The private PNG is retained only as historical evidence of the website's Share
+dialog; it does not establish the current native Share behavior.
+
+Published by Codex under Gabe's direction.
