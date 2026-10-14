@@ -40,6 +40,11 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
     }
     // A denied or rejected write falls through to the legacy copy below.
   } catch {}
+  return copyTextViaSelection(text);
+}
+
+/** The legacy selection copy. It returns false instead of throwing. */
+export function copyTextViaSelection(text: string): boolean {
   try {
     const area = document.createElement("textarea");
     area.value = text;
@@ -50,6 +55,8 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
     area.style.opacity = "0";
     document.body.appendChild(area);
     try {
+      // @ref LLP 0010#copy — selecting an unfocused textarea can leave the old clipboard intact.
+      area.focus({ preventScroll: true });
       area.select();
       area.setSelectionRange(0, text.length);
       return document.execCommand("copy");
