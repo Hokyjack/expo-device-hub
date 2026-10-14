@@ -3,11 +3,12 @@ import { captureRuntime } from "./capture/runtime";
 import { rebootedWithCaptureSince } from "./capture/reboot";
 import { Command, InvalidArgumentError } from "commander";
 import { execFileSync, execSync, spawn as nodeSpawn, type ChildProcess } from "child_process";
-import { existsSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, statSync, mkdirSync, openSync, closeSync, readSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { createHash, randomBytes } from "crypto";
 import { networkInterfaces } from "os";
-import { join, resolve } from "path";
+import { extname, join, resolve } from "path";
 import WebSocket from "ws";
+import { onCliInputReady } from "./socket/cli-input";
 import {
   stateDir,
   stateFileForDevice,
@@ -29,6 +30,7 @@ import { dirnameOf, sleepSync, isPortFree, servePreview } from "./runtime";
 import { isLoopbackHost } from "./middleware-utils";
 import { runShutdownSteps } from "./shutdown-budget";
 import { launchAppAsync } from "./launch-app";
+import { simulatorBootEnv, validatedAdditionalDylibs } from "./additional-dylibs";
 import {
   assertKnownCapabilities,
   missingCapabilities,
@@ -46,9 +48,12 @@ import {
   waitForLaunchUpdates,
 } from "./launch-manager";
 import { parseCaptureFields } from "./capture/fields";
+import { parseCaptureProxy } from "./capture/upstream";
 import { killOwnListeners } from "./ports";
-import { findBootedDevice, resolveDevice } from "./device";
+import { BOOT_TIMEOUT_MS, findBootedDevice, resolveDevice } from "./device";
 import { openSimulatorHost } from "./simulator-host";
+import { simctl } from "./simctl";
+import { installAppInvocation, runInvocation } from "./host-actions-utils";
 import { runStreamDebugLog, startStreamDebugLog } from "./stream-debug-log";
 import { permissions } from "./permissions";
 import { uiSettings } from "./ui-settings";
@@ -68,7 +73,7 @@ import {
 import { parseIceUrlList, streamHelperArgs, streamSettingsEqual } from "./stream-runtime-args";
 import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
 import { parseHingeAngle } from "./hinge-angle";
-import { sendHingeAngleToWs } from "./hinge-command";
+import { readHingeStateFromWs, sendHingeAngleToWs } from "./hinge-command";
 import { finishDeviceRecordingsForShutdown } from "./device-session";
 import { recordingShutdownGraceMs, stopForStreamReplacement, stopProcess } from "./stop-process";
 import { captureHarPaths, followCaptureHar } from "./capture";
@@ -248,11 +253,6 @@ function openHelperSocket(state: ServerState): WebSocket {
   );
 }
 
-function reportInputSocketClose(ws: WebSocket, reject: (error: Error) => void): void {
-  ws.on("close", (code, reason) => {
-    if (code === 1013) reject(new Error(`Simulator input rejected: ${reason.toString() || "server busy"}. Try again shortly.`));
-  });
-}
 
 function clearState(udid?: string) {
   if (udid) {
@@ -338,7 +338,7 @@ function isProcessAlive(pid: number): boolean {
 function bootDevice(udid: string): void {
   if (!isDeviceBooted(udid)) {
     try {
-      execSync(`xcrun simctl boot ${udid}`, { encoding: "utf-8", stdio: "pipe" });
+      execFileSync("xcrun", ["simctl", "boot", udid], { encoding: "utf-8", stdio: "pipe", env: simulatorBootEnv(udid) });
     } catch (err: any) {
       const msg = (err.stderr ?? err.message ?? "").toLowerCase();
       if (!msg.includes("booted") && !msg.includes("current state")) {
@@ -374,19 +374,14 @@ async function findAvailablePort(start: number): Promise<number> {
 
 async function ensureBooted(udid: string): Promise<void> {
   bootDevice(udid);
-  // `simctl bootstatus -b` blocks until the device's services are actually ready
-  // (not just flipped to "Booted"). Much more reliable than polling `simctl list`.
+  // @ref LLP 0011#boot-is-a-readiness-barrier — Booted can still be starting services; a failed wait stops startup.
   try {
-    execSync(`xcrun simctl bootstatus ${udid} -b`, {
-      encoding: "utf-8",
-      stdio: "pipe",
-      timeout: 60_000,
-    });
-  } catch (err: any) {
-    if (!isDeviceBooted(udid)) {
-      console.error(`Device ${udid} failed to reach booted state: ${err.stderr || err.message}`);
-      process.exit(1);
-    }
+    await simctl(["bootstatus", udid, "-b"], BOOT_TIMEOUT_MS);
+  } catch (error) {
+    const detail = (error as { killed?: boolean }).killed
+      ? `boot did not finish within ${BOOT_TIMEOUT_MS / 1000}s`
+      : `boot did not finish: ${error instanceof Error ? error.message : String(error)}`;
+    throw new Error(`Simulator ${udid} ${detail}`, { cause: error });
   }
 
   // Only clean up a capability loader an earlier session left behind. Arming belongs to
@@ -857,17 +852,16 @@ async function gesture(jsonStr: string, deviceArg?: string) {
 
   return new Promise<void>((resolve, reject) => {
     const ws = openHelperSocket(state);
-    reportInputSocketClose(ws, reject);
     ws.binaryType = "arraybuffer";
 
-    ws.onopen = () => {
+    onCliInputReady(ws, state.inputAdmission === true, () => {
       const json = new TextEncoder().encode(JSON.stringify(touch));
       const msg = new Uint8Array(1 + json.length);
       msg[0] = 0x03;
       msg.set(json, 1);
       ws.send(msg);
       setTimeout(() => { ws.close(); resolve(); }, 50);
-    };
+    }, reject);
 
     ws.onerror = () => {
       console.error("Failed to connect to serve-sim server at", state.wsUrl);
@@ -892,7 +886,6 @@ async function tap(xArg: string, yArg: string, deviceArg?: string) {
   }
   return new Promise<void>((resolve, reject) => {
     const ws = openHelperSocket(state);
-    reportInputSocketClose(ws, reject);
     ws.binaryType = "arraybuffer";
     const send = (type: "begin" | "end") => {
       const json = new TextEncoder().encode(JSON.stringify({ type, x, y }));
@@ -901,13 +894,13 @@ async function tap(xArg: string, yArg: string, deviceArg?: string) {
       msg.set(json, 1);
       ws.send(msg);
     };
-    ws.onopen = () => {
+    onCliInputReady(ws, state.inputAdmission === true, () => {
       send("begin");
       setTimeout(() => {
         send("end");
         setTimeout(() => { ws.close(); resolve(); }, 50);
       }, 40);
-    };
+    }, reject);
     ws.onerror = () => {
       console.error("Failed to connect to serve-sim server at", state.wsUrl);
       reject(new Error("WebSocket connection failed"));
@@ -969,11 +962,15 @@ async function typeText(
   await sendKeyEventsToWs(state.wsUrl, events, { token: state.token });
 }
 
-async function hinge(angle: number, deviceArg?: string) {
+async function hinge(angle: number | undefined, deviceArg?: string) {
   const state = readState(deviceArg);
   if (!state) {
     console.error("No serve-sim server running. Run `serve-sim` first.");
     process.exit(1);
+  }
+  if (angle === undefined) {
+    console.log(JSON.stringify({ device: state.device, ...await readHingeStateFromWs(state.wsUrl, { token: state.token }) }));
+    return;
   }
   await sendHingeAngleToWs(state.wsUrl, angle, { token: state.token });
   console.log(JSON.stringify({ device: state.device, hingeAngle: angle }));
@@ -1001,17 +998,16 @@ async function rotate(orientation: string, deviceArg?: string) {
 
   return new Promise<void>((resolve, reject) => {
     const ws = openHelperSocket(state);
-    reportInputSocketClose(ws, reject);
     ws.binaryType = "arraybuffer";
 
-    ws.onopen = () => {
+    onCliInputReady(ws, state.inputAdmission === true, () => {
       const json = new TextEncoder().encode(JSON.stringify({ orientation }));
       const msg = new Uint8Array(1 + json.length);
       msg[0] = 0x07;
       msg.set(json, 1);
       ws.send(msg);
       setTimeout(() => { ws.close(); resolve(); }, 50);
-    };
+    }, reject);
 
     ws.onerror = () => {
       console.error("Failed to connect to serve-sim server at", state.wsUrl);
@@ -1045,17 +1041,16 @@ async function button(buttonName = "home", deviceArg?: string) {
 
   return new Promise<void>((resolve, reject) => {
     const ws = openHelperSocket(state);
-    reportInputSocketClose(ws, reject);
     ws.binaryType = "arraybuffer";
 
-    ws.onopen = () => {
+    onCliInputReady(ws, state.inputAdmission === true, () => {
       const json = new TextEncoder().encode(JSON.stringify(payload));
       const msg = new Uint8Array(1 + json.length);
       msg[0] = 0x04;
       msg.set(json, 1);
       ws.send(msg);
       setTimeout(() => { ws.close(); resolve(); }, 50);
-    };
+    }, reject);
 
     ws.onerror = () => {
       console.error("Failed to connect to serve-sim server at", state.wsUrl);
@@ -1095,16 +1090,15 @@ async function caDebug(option: string, stateRaw: string, deviceArg?: string) {
 
   return new Promise<void>((resolve, reject) => {
     const ws = openHelperSocket(stateFile);
-    reportInputSocketClose(ws, reject);
     ws.binaryType = "arraybuffer";
-    ws.onopen = () => {
+    onCliInputReady(ws, stateFile.inputAdmission === true, () => {
       const json = new TextEncoder().encode(JSON.stringify({ option: resolved, enabled }));
       const msg = new Uint8Array(1 + json.length);
       msg[0] = 0x08;
       msg.set(json, 1);
       ws.send(msg);
       setTimeout(() => { ws.close(); resolve(); }, 50);
-    };
+    }, reject);
     ws.onerror = () => {
       console.error("Failed to connect to serve-sim server at", stateFile.wsUrl);
       reject(new Error("WebSocket connection failed"));
@@ -1121,12 +1115,11 @@ async function memoryWarning(deviceArg?: string) {
   }
   return new Promise<void>((resolve, reject) => {
     const ws = openHelperSocket(stateFile);
-    reportInputSocketClose(ws, reject);
     ws.binaryType = "arraybuffer";
-    ws.onopen = () => {
+    onCliInputReady(ws, stateFile.inputAdmission === true, () => {
       ws.send(new Uint8Array([0x09]));
       setTimeout(() => { ws.close(); resolve(); }, 50);
-    };
+    }, reject);
     ws.onerror = () => {
       console.error("Failed to connect to serve-sim server at", stateFile.wsUrl);
       reject(new Error("WebSocket connection failed"));
@@ -1394,14 +1387,13 @@ async function ensureHelperWithSource(opts: {
  * launches the app. If the helper is already running, source changes are
  * hot-swapped through its control socket without relaunching the app.
  */
-async function camera(args: string[]) {
+async function camera(args: string[], quiet = false) {
   let deviceArg: string | undefined;
   let filePath: string | undefined;
   let webcam: string | true | undefined;
   let stopWebcam = false;
   let listWebcams = false;
   let forceBuild = false;
-  let quiet = false;
   let mirror: "auto" | "on" | "off" = "auto";
   const filtered: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -1602,6 +1594,14 @@ Examples:
     process.exit(1);
   }
 
+  let callerDylibs: string[];
+  try {
+    callerDylibs = validatedAdditionalDylibs();
+  } catch (error) {
+    printStartupError(error instanceof Error ? error.message : String(error), quiet);
+    process.exit(1);
+  }
+
   const udid = deviceArg ? resolveDevice(deviceArg) : findBootedDevice();
   if (!udid) {
     console.error("No booted simulator. Boot one or pass -d <udid|name>.");
@@ -1669,7 +1669,7 @@ Examples:
 
   const env = {
     ...process.env,
-    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: dylib,
+    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: [...new Set([dylib, ...callerDylibs])].join(":"),
     SIMCTL_CHILD_SIMCAM_SHM_NAME: shmName,
     ...(mirror !== "auto" ? { SIMCTL_CHILD_SIMCAM_MIRROR_MODE: mirror } : {}),
   };
@@ -1772,9 +1772,14 @@ async function startNetworkCapture(
   }));
 }
 
+function printStartupError(message: string, quiet: boolean): void {
+  if (quiet) console.log(JSON.stringify({ error: message }));
+  else console.error(message);
+}
+
 async function serve(
   servePort: number,
-  devices: string[],
+  targetDevices: string[],
   portExplicit: boolean,
   host: string,
   options: {
@@ -1788,29 +1793,14 @@ async function serve(
     requireToken?: boolean;
     quiet?: boolean;
     networkCapture?: boolean;
+    networkCaptureProxy?: string;
   } = {},
 ) {
   const quiet = !!options.quiet;
-  // Under --quiet the caller parses stdout, so a failure must be a JSON line there, not bare stderr.
   const failStartup = (message: string): never => {
-    if (quiet) console.log(JSON.stringify({ error: message }));
-    else console.error(message);
+    printStartupError(message, quiet);
     process.exit(1);
   };
-  // Boot the target simulators; the preview server streams them in-process
-  // (no spawned helper). Sessions are created lazily on the first stream request.
-  let targetDevices: string[];
-  try {
-    targetDevices = resolveTargetDevices(devices);
-    if (!quiet && devices.length === 0 && readAllStates().length === 0) {
-      console.log("Starting simulator stream...");
-    }
-    for (const udid of targetDevices) {
-      await ensureBooted(udid);
-    }
-  } catch (err) {
-    return failStartup(err instanceof Error ? err.message : String(err));
-  }
   const targetDevice = targetDevices[0];
 
   const capture = await import("./capture");
@@ -1825,20 +1815,26 @@ async function serve(
   // Minted here, not in the middleware, because the operator has to be told what it is.
   const requirePreviewToken = !!options.requireToken;
   const previewToken = randomBytes(32).toString("base64url");
-  const middleware = simMiddleware({
-    basePath: "/",
-    device: targetDevice,
-    streamSettings: options.stream,
-    proxyHelpers: true,
-    corsOrigins: options.corsOrigins ?? [],
-    frameAncestors: options.frameAncestors ?? [],
-    shareUrl: options.shareUrl,
-    allowAnyHostWhenInsecure: options.allowAnyHostWhenInsecure ?? false,
-    networkCapture: !!options.networkCapture,
-    loopbackOnly: isLoopbackHost(host),
-    execToken: previewToken,
-    requirePreviewToken,
-  });
+  let middleware: ReturnType<typeof simMiddleware>;
+  try {
+    middleware = simMiddleware({
+      basePath: "/",
+      device: targetDevice,
+      streamSettings: options.stream,
+      proxyHelpers: true,
+      corsOrigins: options.corsOrigins ?? [],
+      frameAncestors: options.frameAncestors ?? [],
+      shareUrl: options.shareUrl,
+      allowAnyHostWhenInsecure: options.allowAnyHostWhenInsecure ?? false,
+      networkCapture: !!options.networkCapture,
+      networkCaptureProxy: options.networkCaptureProxy,
+      loopbackOnly: isLoopbackHost(host),
+      execToken: previewToken,
+      requirePreviewToken,
+    });
+  } catch (error) {
+    return failStartup(error instanceof Error ? error.message : String(error));
+  }
 
   // Try requested port; if busy and the user didn't pin it, scan forward.
   const maxScan = portExplicit ? 1 : 50;
@@ -2048,10 +2044,15 @@ program
       "HTTPS is decrypted for the whole boot session and certificate-pinned apps will refuse to connect. " +
       "Requires mitmproxy. Relaunch apps after enabling so they pick up the proxy.",
   )
+  .option(
+    "--network-capture-proxy <url>",
+    "Forward captured traffic through one HTTP proxy (http://[user:password@]host:port), or none for direct. Defaults to direct.",
+  )
   .option("--transport <http|webrtc>", "Stream transport", "http")
+  .option("--install-app-path <path>", "Install this .app after boot, before any requested app launch.")
   .option(
     "--launch-app-identifier <id>",
-    "Bundle identifier of an installed app to launch once the simulator boots",
+    "Bundle identifier of the app to launch once the simulator boots",
   )
   .option(
     "--launch-arg <arg>",
@@ -2201,6 +2202,25 @@ Examples:
       await killStreams(typeof opts.kill === "string" ? opts.kill : undefined);
       return;
     }
+    try {
+      validatedAdditionalDylibs();
+    } catch (error) {
+      printStartupError(error instanceof Error ? error.message : String(error), !!opts.quiet);
+      process.exit(1);
+    }
+    try {
+      const upstream = parseCaptureProxy(opts.networkCaptureProxy);
+      if (upstream !== null && (opts.detach || opts.preview === false)) {
+        throw new Error(
+          "--network-capture-proxy needs the preview server, so drop --detach/--no-preview. " +
+            "Their stream helpers would capture without it.",
+        );
+      }
+      captureRuntime.setUpstream(upstream);
+    } catch (error) {
+      printStartupError(error instanceof Error ? error.message : String(error), !!opts.quiet);
+      process.exit(1);
+    }
     if (opts.transport !== "http" && opts.transport !== "webrtc") {
       console.error("--transport must be one of: http, webrtc.");
       process.exit(1);
@@ -2271,6 +2291,28 @@ Examples:
       console.error("--launch-app-identifier needs an app bundle identifier, such as host.exp.Exponent.");
       process.exit(1);
     }
+    const installAppPath = opts.installAppPath === undefined ? undefined : resolve(opts.installAppPath);
+    if (installAppPath) {
+      try {
+        if (extname(installAppPath) !== ".app" || !statSync(installAppPath).isDirectory()) {
+          throw new Error("expected a .app directory");
+        }
+      } catch {
+        printStartupError(`--install-app-path needs an existing .app directory: ${installAppPath}`, !!opts.quiet);
+        process.exit(1);
+      }
+      const info = await runInvocation({
+        file: "plutil",
+        args: ["-extract", "CFBundleIdentifier", "raw", "-expect", "string", "-o", "-", join(installAppPath, "Info.plist")],
+      });
+      if (info.exitCode !== 0 || !info.stdout.trim()) {
+        printStartupError(
+          `Could not read CFBundleIdentifier from ${installAppPath}/Info.plist: ${info.stderr.trim() || "expected a non-empty string"}`,
+          !!opts.quiet,
+        );
+        process.exit(1);
+      }
+    }
     const launchArgs: string[] = opts.launchArg ?? [];
     const openUrl: string | undefined = opts.openUrl;
     if (!bundleId && (launchArgs.length > 0 || openUrl)) {
@@ -2293,6 +2335,7 @@ Examples:
     // run mode starts. Otherwise follow and detach pick their own target, as
     // they did before this flag existed.
     const launchesBeforeStreaming =
+      Boolean(installAppPath) ||
       Boolean(bundleId) ||
       capabilities.enable.length > 0 ||
       capabilities.disable.length > 0 ||
@@ -2348,6 +2391,7 @@ Examples:
     }
     if (opts.detach) {
       const unsupported = [
+        ...(installAppPath ? ["--install-app-path"] : []),
         ...(bundleId ? ["--launch-app-identifier"] : []),
         ...(launchArgs.length > 0 ? ["--launch-arg"] : []),
         ...(openUrl ? ["--open-url"] : []),
@@ -2372,6 +2416,7 @@ Examples:
       })();
       return captureStopping;
     };
+    // @ref LLP 0011#startup-order — boot and requested app startup precede preview readiness.
     if (!opts.detach) {
       try {
         targets = resolveTargetDevices(devices);
@@ -2419,6 +2464,13 @@ Examples:
         if (sessionStopping) return;
         for (const udid of launchesBeforeStreaming && !isStreamHelper ? targets : []) {
           if (sessionStopping) return;
+          if (installAppPath) {
+            const result = await runInvocation(installAppInvocation(udid, installAppPath));
+            if (result.exitCode !== 0) {
+              throw new Error(`Could not install ${installAppPath} on ${udid}: ${result.stderr.trim() || `simctl exited ${result.exitCode}`}`);
+            }
+            if (sessionStopping) return;
+          }
           if (bundleId) {
             await launchAppAsync(udid, { bundleId, launchArgs, openUrl, capabilities });
           } else {
@@ -2435,7 +2487,8 @@ Examples:
           }
         }
       } catch (error) {
-        console.error(error instanceof Error ? error.message : error);
+        if (sessionStopping) return;
+        printStartupError(error instanceof Error ? error.message : String(error), !!opts.quiet);
         await stopNetworkCapture();
         process.exit(1);
       }
@@ -2457,6 +2510,7 @@ Examples:
         requireToken: !!opts.requireToken,
         quiet: !!opts.quiet,
         networkCapture: !!opts.networkCapture,
+        networkCaptureProxy: opts.networkCaptureProxy,
         networkCaptureFields: opts.networkCaptureField,
       });
     }
@@ -2655,14 +2709,14 @@ program
 
 program
   .command("hinge")
-  .description("Set a foldable simulator's hinge angle (0° folded, 90° half folded, 180° unfolded)")
-  .argument("<position>", "fold|half|unfold or an angle from 0 to 180 degrees", (value: string) => {
+  .description("Set or read a foldable simulator's hinge angle (0° folded, 90° half folded, 180° unfolded)")
+  .argument("[position]", "fold|half|unfold or an angle from 0 to 180 degrees", (value: string) => {
     const angle = parseHingeAngle(value);
     if (angle === undefined) throw new InvalidArgumentError("Expected fold, half, unfold, or an angle from 0 to 180");
     return angle;
   })
   .option(...deviceOpt)
-  .action((angle: number, opts) => hinge(angle, opts.device));
+  .action((angle: number | undefined, opts) => hinge(angle, opts.device));
 
 program
   .command("ca-debug")
@@ -2699,7 +2753,7 @@ program
   .allowUnknownOption(true)
   .helpOption(false)
   .argument("[args...]")
-  .action((args: string[]) => camera(args));
+  .action((args: string[]) => camera(args, !!program.opts().quiet));
 
 program
   .command("permissions")

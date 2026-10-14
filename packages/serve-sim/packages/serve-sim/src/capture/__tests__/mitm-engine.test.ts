@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import {
+  CAPTURE_FIELDS_FILE_ENV,
+  captureFieldsFile,
   captureCaDir,
   DEFAULT_MAX_CONTROL_BODY_BYTES,
   describeFailure,
@@ -167,6 +169,12 @@ describe("describeFailure", () => {
     expect(out).toContain("Errno 61");
   });
 
+  test("names an upstream proxy that refused the tunnel, rather than an absent listener", () => {
+    const out = describeFailure("Upstream proxy 127.0.0.1:8899 refused HTTP CONNECT request: 407 Proxy Authentication Required");
+    expect(out).toStartWith("The upstream proxy refused the connection: 407 Proxy Authentication Required.");
+    expect(out).not.toContain("Nothing was listening");
+  });
+
   test("explains an unresolvable host", () => {
     expect(describeFailure("[Errno 8] nodename nor servname provided, or not known")).toContain(
       "could not be resolved",
@@ -243,6 +251,59 @@ setInterval(() => {}, 1000);
     else process.env.SERVE_SIM_TEST_ATTEMPTS = previous.attempts;
     if (previous.paths === undefined) delete process.env.SERVE_SIM_TEST_PATHS;
     else process.env.SERVE_SIM_TEST_PATHS = previous.paths;
+    if (previous.caDir === undefined) delete process.env.SERVE_SIM_CAPTURE_CA_DIR;
+    else process.env.SERVE_SIM_CAPTURE_CA_DIR = previous.caDir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("proxy startup chooses another listener port when an upstream uses the selected port", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "serve-sim-mitm-own-port-"));
+  const executable = join(dir, "mitmdump");
+  const launched = join(dir, "launched");
+  writeFileSync(executable, `#!/usr/bin/env bun
+import { appendFileSync, writeFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(launched)}, process.argv[process.argv.indexOf("--listen-port") + 1] + "\\n");
+const confdir = process.argv.find((arg) => arg.startsWith("confdir="))?.slice("confdir=".length);
+writeFileSync(confdir + "/mitmproxy-ca-cert.pem", "test-ca");
+await fetch(process.env.SERVE_SIM_CAPTURE_CONTROL_URL + "/ready", {
+  method: "POST",
+  headers: { "x-serve-sim-capture-token": process.env.SERVE_SIM_CAPTURE_CONTROL_TOKEN },
+  body: "{}",
+});
+setInterval(() => {}, 1000);
+`);
+  chmodSync(executable, 0o755);
+  const previous = { executable: process.env.SERVE_SIM_MITMDUMP, caDir: process.env.SERVE_SIM_CAPTURE_CA_DIR };
+  process.env.SERVE_SIM_MITMDUMP = executable;
+  process.env.SERVE_SIM_CAPTURE_CA_DIR = join(dir, "ca");
+  try {
+    // The conservative guard covers local aliases and remote IPs. All can use another listener port.
+    for (const host of ["localhost", "127.0.0.1", "[::1]", "192.0.2.10"]) {
+      let allocations = 0;
+      const proxy = await startMitmProxy(new CaptureStore(), {
+        upstream: { url: `http://${host}:54321/` },
+        allocatePort: async () => ++allocations === 1 ? 54321 : 54322,
+      });
+      try {
+        expect(allocations).toBe(2);
+        expect(proxy.address).toBe("127.0.0.1:54322");
+      } finally {
+        await proxy.close();
+      }
+    }
+    expect(readFileSync(launched, "utf8").trim().split("\n")).toEqual(Array(4).fill("54322"));
+    let allocations = 0;
+    await expect(startMitmProxy(new CaptureStore(), {
+      upstream: { url: "http://127.0.0.1:54321/" },
+      allocatePort: async () => { allocations++; return 54321; },
+    })).rejects.toThrow("own port");
+    expect(allocations).toBe(3);
+    // Colliding candidates never start a child process.
+    expect(readFileSync(launched, "utf8").trim().split("\n")).toHaveLength(4);
+  } finally {
+    if (previous.executable === undefined) delete process.env.SERVE_SIM_MITMDUMP;
+    else process.env.SERVE_SIM_MITMDUMP = previous.executable;
     if (previous.caDir === undefined) delete process.env.SERVE_SIM_CAPTURE_CA_DIR;
     else process.env.SERVE_SIM_CAPTURE_CA_DIR = previous.caDir;
     rmSync(dir, { recursive: true, force: true });
@@ -393,5 +454,23 @@ describe("sweepStaleConfdirs", () => {
 
   test("keeps every confdir when processes cannot be listed", () => {
     expect(sweep(() => null)).toEqual({ swept: 0, removed: [] });
+  });
+});
+
+describe("captureFieldsFile", () => {
+  test("writes the fields owner-only, replaces them whole, and names the variable the addon reads", () => {
+    const dir = mkdtempSync(join(tmpdir(), "serve-sim-fields-file-"));
+    try {
+      const file = captureFieldsFile(dir);
+      file.write(["header", "response-body"]);
+      expect(readFileSync(file.path, "utf8")).toBe("header,response-body");
+      expect(statSync(file.path).mode & 0o777).toBe(0o600);
+      file.write([]);
+      expect(readFileSync(file.path, "utf8")).toBe("");
+      const addon = readFileSync(join(import.meta.dir, "..", "mitm-addon", "servesim_capture.py"), "utf8");
+      expect(addon).toContain(`os.environ.get("${CAPTURE_FIELDS_FILE_ENV}")`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

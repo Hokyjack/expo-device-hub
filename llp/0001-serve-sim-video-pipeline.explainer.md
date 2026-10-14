@@ -5,7 +5,7 @@
 **Systems:** ServeSim
 **Author:** Gabe Debes
 **Date:** 2026-09-29
-**Revised:** 2026-10-02 (moved into the LLP corpus from `packages/serve-sim/packages/serve-sim/docs/video-pipeline.md`; links and paths updated)
+**Revised:** 2026-10-11
 **Related:** LLP 0002, LLP 0003
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
@@ -55,6 +55,34 @@ recording-plus-WebRTC path uses the accelerated transfer. Neither a
 `CVPixelBuffer` wrapper nor a GPU transfer guarantees that the simulator is
 never delayed by a surface fence. Direct copy and viewer-scale latencies still
 need separate measurements.
+
+## Capture recovery
+
+Callback changes re-rank cached surfaces. Capture reads each descriptor's live
+surface, including the masked-surface fallback, once per second independently
+of those callbacks. Wiring a new descriptor set performs an initial live read.
+A surface that changes without a callback is discovered at the next live read.
+Replacing or dropping a cached surface clears its seed and canvas caches, so a
+replacement with the same seed still reaches capture. [observed:
+`Sources/SimNative/FrameCapture.swift`, `currentSurface()`, `updateCachedSurface(_:for:)`]
+
+Before the first frame, capture retries framebuffer wiring once per second.
+Afterward, a live read confirming at least one second without a selected surface
+starts recovery; retries continue once per second until a surface returns.
+While the simulator is not booted, capture makes neither the live read nor the
+retry; the loss still counts, and both resume at the next once-per-second check
+after it boots.
+Cached misses between live reads do not advance recovery. Unchanged pixels on
+a static screen do not trigger recovery while its surface is available.
+Capture logs the start and end of a loss. [observed: `Sources/SimNative/FrameCapture.swift`;
+`Sources/StreamingPolicy/FramebufferSurfaceWatch.swift`]
+
+`/webrtc/stats` reports `surfaceLosses`, cumulative `surfaceLostMs`
+(in milliseconds, including an ongoing loss), and `rewires` under `capture`. Loss counters cover
+losses after the first frame; rewires count attempts, including startup retries.
+These counters reset when capture starts. [observed:
+`Sources/StreamingPolicy/FramebufferSurfaceWatch.swift`;
+`Sources/SimNative/CaptureEngine.swift`]
 
 ## WebRTC viewers
 
@@ -143,11 +171,64 @@ not a promise of 60 distinct rendered frames. The recorder bounds pending
 frames, pixel buffers, and writer work, and counts coalesced ticks, drops,
 repeats, backpressure, and encode time. Overloaded hosts can miss the target.
 
+### Keyframe contract
+
+The recording encoder sets `kVTCompressionPropertyKey_MaxKeyFrameInterval`
+to 60 submitted frames and `kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration`
+to 1.0 second of presentation time. A source pause can leave a larger gap
+between recorded keyframes; the first resumed sample is a keyframe
+[observed: `Sources/SimNative/NativeVideoRecorder.swift` compression-session
+configuration; `Tests/SimNativeTests/NativeVideoRecorderKeyframeTests.swift`].
+The continuous-output test checks keyframe PTS gaps at most `1.0 + 1.5 / 60`
+seconds, allowing encoder timing tolerance. The pause test requires the first
+sample after a gap longer than one second to be a keyframe [observed:
+`NativeVideoRecorderKeyframeTests.testKeyframesAreAtMostOneSecondApart` and
+`testFirstSampleAfterAPauseLongerThanASecondIsAKeyframe`]. Shorter keyframe
+intervals can reduce decoding work when seeking; they do not determine seek
+precision [observed: [HTML seeking algorithm](https://html.spec.whatwg.org/multipage/media.html#seeking)].
+
+### Output files
+
 Compressed H.264 samples go to `AVAssetWriterInput` with `outputSettings: nil`,
 so the MP4 writer does not encode again. On successful finalization the output
 directory contains `recording.mp4` and `session.json`. The manifest keeps the
 record-sim upload contract: `firstFrameWallClock` with `unixMs` and `iso8601`,
 `width`, `height`, and `recording`.
+
+### Saved MP4 layout contract
+
+The writer sets `AVAssetWriter.shouldOptimizeForNetworkUse` to `true`. In the
+finalized `recording.mp4`, the `moov` index precedes the `mdat` media data, so
+progressive loading can read track metadata before the media payload. The writer
+still receives compressed H.264 samples with `outputSettings: nil`; this layout
+setting does not alter the recording encoder's bitrate, cadence, or keyframe
+configuration [observed: `Sources/SimNative/NativeVideoRecorder.swift`,
+`openWriter` and compression-session configuration].
+
+`NativeVideoRecorderTests.testHardwareRecordingRepeatsOwnedFrameAndWritesNativeCanvas`
+parses the finalized file's top-level boxes and requires `moov` before `mdat`.
+It also checks the native canvas, track frame rate, and duration [observed:
+`Tests/SimNativeTests/NativeVideoRecorderTests.swift`]. This is a saved-file
+contract; it does not establish fewer capture or browser playback drops.
+
+Fast-start adds work during `finishWriting` that grows with the saved file. On an
+M5 Pro with internal SSD and passthrough H.264, Szymon measured about 2.7 seconds
+for 2 GB and 6 seconds for 8 GB, compared with 0.01–0.04 seconds without the flag
+[confirmed: Szymon (`szdziedzic`), 2026-10-08,
+[PR #251 review](https://github.com/expo/expo-device-hub/pull/251#discussion_r4221158869)].
+
+The recorder's 60-second deadline covers encoder flushing. After MP4 writer
+finalization starts, that deadline cannot call `cancelWriting`; the recorder
+awaits the writer's completion callback. `finalizeMs` measures elapsed monotonic
+time from starting writer finalization to its callback, excluding encoder flush
+and manifest writing, and appears in the completion log [observed:
+`Sources/SimNative/NativeVideoRecorder.swift`, `finish` and `finishOnQueue`;
+`Sources/SimNative/CaptureEngine.swift`, `stopRecording`].
+
+This recorder deadline is separate from the CLI's existing 65-second wait for a
+helper with a known active recording. If that outer wait expires, the CLI can
+still force-kill the helper and interrupt its writer [observed:
+`src/stop-process.ts`, `recordingShutdownGraceMs` and `stopProcess`].
 
 ## Control and shutdown
 
