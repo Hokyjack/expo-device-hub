@@ -20,8 +20,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { type AccessibilityLoader, loadAndroidAccessibility } from './accessibility';
 import { appendActivitySample } from './activity';
+import { useActivityStatus } from './useActivityStatus';
 import {
   EMPTY_ANDROID_ACTIVITY,
+  ANDROID_ACTIVITY_STALE_MS,
   nextAndroidActivityAfterSilence,
   parseAndroidActivityFrame,
 } from './android-activity';
@@ -38,7 +40,6 @@ import {
 } from './android-events';
 import {
   ANDROID_DEVICE_SETTING_KEYS,
-  ANDROID_POLLED_DEVICE_SETTING_KEYS,
   type AndroidDeviceSettingKey,
   androidDeviceSettingPathFor,
   androidDeviceSettingRequest,
@@ -79,6 +80,7 @@ import { useAndroidCamera } from './useAndroidCamera';
 import { type DeviceLocationBackend, useDeviceLocation } from './useDeviceLocation';
 import { useAppPermissions } from './useAppPermissions';
 import { useStreamSettingsResource } from './useStreamSettingsResource';
+import { useDeviceSettingsReadStatus } from './useDeviceSettingsReadStatus';
 import { parseScreenRecordingStatus } from './screen-recording';
 import { fetchScreenshot } from './screenshot';
 import { sessionTokenFetch, sessionTokenProtocols, withSessionTokenQuery } from './session-token';
@@ -121,7 +123,9 @@ const FOREGROUND_POLL_MS = 5000;
 const EVENTS_POLL_MS = 1000;
 const STREAM_METADATA_POLL_MS = 1500;
 const STREAM_OPTIONS_POLL_MS = 3000;
-const DEVICE_SETTINGS_POLL_MS = 3000;
+const DEVICE_SETTINGS_POLL_MS = 5000;
+// Match serve-sim's UI request deadline so an unreachable endpoint cannot hold the initial read.
+const DEVICE_SETTINGS_READ_TIMEOUT_MS = 5000;
 
 const noop = () => {};
 const ANDROID_STREAM_CODECS = ['h264'] as const;
@@ -260,6 +264,8 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
   // The foreground app, polled from `/api/foreground`. null until the first read.
   const [foregroundApp, setForegroundApp] = useState<ForegroundApp | null>(null);
   const [activity, setActivity] = useState<DeviceActivity | null>(null);
+  const activityScope = active ? JSON.stringify([baseUrl, targetDevice, token]) : null;
+  const { activityStatus, setActivityStatus } = useActivityStatus(activityScope);
   const activityLastSampleAtRef = useRef(0);
   const [serverStreamSettings, setServerStreamSettings] =
     useState<ServeEmuStreamSettings | null>(null);
@@ -1639,21 +1645,27 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
       return;
     }
     setActivity(EMPTY_ANDROID_ACTIVITY);
+    let cancelled = false;
     let source: EventSource;
     try {
       source = new EventSource(
         withSessionTokenQuery(deviceApiUrl(baseUrl, '/api/metrics', targetDevice), token),
       );
     } catch {
+      setActivityStatus('error');
       setActivity({ ...EMPTY_ANDROID_ACTIVITY, errored: true });
       return;
     }
     const onFrame = (event: Event) => {
+      if (cancelled) return;
       const frame = parseAndroidActivityFrame(event.type, String((event as MessageEvent).data));
       if (!frame) return;
+      setActivityStatus('ready');
       if (frame.kind === 'meta') {
         setActivity((current) =>
-          current ? { ...current, hostCores: frame.hostCores, errored: false } : current,
+          current && (current.hostCores !== frame.hostCores || current.errored)
+            ? { ...current, hostCores: frame.hostCores, errored: false }
+            : current,
         );
         return;
       }
@@ -1662,9 +1674,22 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
     };
     source.addEventListener('meta', onFrame);
     source.addEventListener('message', onFrame);
-    source.onerror = () => setActivity((current) => (current ? { ...current, errored: true } : current));
+    source.onerror = () => {
+      if (cancelled) return;
+      setActivityStatus('error');
+      setActivity((current) =>
+        current && !current.errored ? { ...current, errored: true } : current,
+      );
+    };
     const openedAt = Date.now();
     const watchdog = setInterval(() => {
+      if (cancelled) return;
+      if (
+        activityLastSampleAtRef.current === 0 &&
+        Date.now() - openedAt > ANDROID_ACTIVITY_STALE_MS
+      ) {
+        setActivityStatus('error');
+      }
       setActivity((current) => {
         if (!current) return current;
         const clock = {
@@ -1676,10 +1701,11 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
       });
     }, 1000);
     return () => {
+      cancelled = true;
       clearInterval(watchdog);
       source.close();
     };
-  }, [active, baseUrl, targetDevice, token]);
+  }, [active, baseUrl, targetDevice, token, setActivityStatus]);
 
   // ── Recorded input/session events (polling, best-effort) ──
   // serve-emu records Hub-originated touches, keyboard input, hardware buttons,
@@ -1845,12 +1871,19 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
   // ── Device options (best-effort) ──
   // Keep Hub in sync with changes made on-device or through serve-emu's own UI.
   // Polling also makes network's aggregate wifi/data state authoritative.
+  // TODO: Replace per-client polling with server-pushed settings changes over WebSocket.
+  const deviceSettingsScope =
+    active && baseUrl ? JSON.stringify([baseUrl, targetDevice, token]) : null;
+  const { deviceSettingsStatus, resetRead, settleRead } =
+    useDeviceSettingsReadStatus(deviceSettingsScope);
+
   useEffect(() => {
     const tracker = deviceSettingWriteTrackerRef.current;
     tracker.reset();
     for (const key of ANDROID_DEVICE_SETTING_KEYS) deviceSettingVersionsRef.current[key]++;
     setDeviceSettingsPending(new Set());
     setDeviceSettings(null);
+    resetRead();
     setAppearanceState(null);
     setDisplayWidthDp(null);
     setHardwareKeyboardConnected(null);
@@ -1860,16 +1893,23 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
 
     let cancelled = false;
     let polling = false;
+    let refreshQueued = false;
+    let revision = 0;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
     let controllers: AbortController[] = [];
     const scope = deviceScope;
+    const pageDocument = typeof document === 'undefined' ? null : document;
+    const isHidden = () => pageDocument?.hidden === true;
+    const clearTimer = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = null;
+    };
 
-    const poll = async (keys: readonly AndroidDeviceSettingKey[]) => {
-      if (cancelled || polling) return;
-      polling = true;
+    const read = async (readRevision: number) => {
       const nextControllers: AbortController[] = [];
       controllers = nextControllers;
       const results = await Promise.all(
-        keys.map(async (key) => {
+        ANDROID_DEVICE_SETTING_KEYS.map(async (key) => {
           const version = deviceSettingVersionsRef.current[key];
           const pendingAtStart = tracker.pending.has(key);
           const controller = new AbortController();
@@ -1877,10 +1917,19 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
           try {
             const response = await sessionFetch(
               deviceApiUrl(baseUrl, androidDeviceSettingPathFor(key), targetDevice),
-              { cache: 'no-store', signal: controller.signal },
+              {
+                cache: 'no-store',
+                signal: AbortSignal.any([
+                  controller.signal,
+                  AbortSignal.timeout(DEVICE_SETTINGS_READ_TIMEOUT_MS),
+                ]),
+              },
             );
             if (!response.ok) return { key, version, pendingAtStart, handled: false as const };
             const payload: unknown = await response.json();
+            if (!payload || typeof payload !== 'object' || !('ok' in payload) || payload.ok !== true) {
+              return { key, version, pendingAtStart, handled: false as const };
+            }
             return {
               key,
               version,
@@ -1894,30 +1943,38 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
           }
         }),
       );
-      polling = false;
-      if (cancelled || deviceScopeRef.current !== scope) return;
-      if (!results.some((result) => result.handled)) return;
+      if (cancelled || deviceScopeRef.current !== scope || readRevision !== revision) return;
+      if (!results.some((result) => result.handled)) {
+        settleRead('error');
+        return;
+      }
       setDeviceSettings((current) => {
-        const next = { ...(current ?? {}) };
+        // Keep tracked settings subscribers quiet when an accepted poll changes nothing.
+        let next = current ?? {};
         for (const result of results) {
           if (!result.handled) continue;
           if (result.pendingAtStart) continue;
           if (deviceSettingVersionsRef.current[result.key] !== result.version) continue;
           if (tracker.pending.has(result.key)) continue;
+          if (result.value === null && !Object.hasOwn(next, result.key)) continue;
+          if (result.value !== null && next[result.key] === result.value) continue;
+          if (next === current) next = { ...next };
           if (result.value === null) delete next[result.key];
           else next[result.key] = result.value;
         }
         return next;
       });
+      settleRead('ready');
       const appearanceResult = results.find((result) => result.key === 'appearance');
       if (
         appearanceResult?.handled &&
         !appearanceResult.pendingAtStart &&
         deviceSettingVersionsRef.current.appearance === appearanceResult.version &&
-        !tracker.pending.has('appearance') &&
-        (appearanceResult.value === 'light' || appearanceResult.value === 'dark')
+        !tracker.pending.has('appearance')
       ) {
-        setAppearanceState(appearanceResult.value);
+        if (appearanceResult.value === 'light' || appearanceResult.value === 'dark') {
+          setAppearanceState(appearanceResult.value);
+        }
       }
       const displaySizeResult = results.find((result) => result.key === 'display-size');
       if (
@@ -1934,10 +1991,36 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
       }
     };
 
-    // Appearance keeps its historical one-shot read because the pinned
-    // serve-emu branch still implements `/api/uimode` synchronously. Network
-    // and font scale use Hub's async compatibility routes and stay live-polled.
-    void poll(ANDROID_DEVICE_SETTING_KEYS);
+    const poll = async () => {
+      if (cancelled || isHidden()) return;
+      const readRevision = ++revision;
+      if (polling) {
+        refreshQueued = true;
+        return;
+      }
+      clearTimer();
+      refreshQueued = false;
+      polling = true;
+      try {
+        await read(readRevision);
+      } finally {
+        polling = false;
+        if (!cancelled && !isHidden()) {
+          if (refreshQueued) void poll();
+          else refreshTimer = setTimeout(() => void poll(), DEVICE_SETTINGS_POLL_MS);
+        }
+      }
+    };
+    const onVisibilityChange = () => {
+      if (isHidden()) {
+        refreshQueued = false;
+        clearTimer();
+      } else {
+        void poll();
+      }
+    };
+    pageDocument?.addEventListener('visibilitychange', onVisibilityChange);
+    void poll();
     // Read once: an emulator's hardware keyboard does not come and go, and the
     // settings poll already spawns one adb read per key every few seconds.
     void sessionFetch(deviceApiUrl(baseUrl, '/api/software-keyboard', targetDevice), {
@@ -1953,17 +2036,14 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
         }
       })
       .catch(() => {});
-    const timer = setInterval(
-      () => void poll(ANDROID_POLLED_DEVICE_SETTING_KEYS),
-      DEVICE_SETTINGS_POLL_MS,
-    );
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      clearTimer();
+      pageDocument?.removeEventListener('visibilitychange', onVisibilityChange);
       for (const controller of controllers) controller.abort();
       tracker.reset();
     };
-  }, [active, baseUrl, deviceScope, targetDevice, sessionFetch]);
+  }, [active, baseUrl, deviceScope, targetDevice, sessionFetch, resetRead, settleRead]);
 
   const webRtcAvailable = serverStreamSettings?.transport === 'webrtc';
   const streamCapabilities = useMemo<DeviceStreamCapabilities>(
@@ -2016,7 +2096,9 @@ export function useAndroidDeviceClient(options: DeviceConnectionOptions): Device
     detachEvents,
     clearEvents,
     activity,
+    activityStatus,
     deviceSettings,
+    deviceSettingsStatus,
     deviceSettingsPending,
     setDeviceSetting,
     displayWidthDp,

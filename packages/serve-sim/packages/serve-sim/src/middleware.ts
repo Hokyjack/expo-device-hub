@@ -1,5 +1,7 @@
 import { openSseStream } from "./sse-stream";
+import { parseCaptureProxy } from "./capture/upstream";
 import { execFile, execSync } from "child_process";
+import { simulatorBootEnv, validatedAdditionalDylibs } from "./additional-dylibs";
 import { createReadStream, readdirSync, readFileSync, existsSync, unlinkSync, watch, type FSWatcher } from "fs";
 import { readFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
@@ -775,10 +777,10 @@ export async function startDeviceInProcess(
 ): Promise<string | null> {
   // `simctl boot` errors when already booted — ignore and let bootstatus confirm.
   await new Promise<void>((resolve) =>
-    execFile("xcrun", ["simctl", "boot", udid], () => resolve()),
+    execFile("xcrun", ["simctl", "boot", udid], { env: simulatorBootEnv(udid) }, () => resolve()),
   );
   const ready = await new Promise<boolean>((resolve) => {
-    execFile("xcrun", ["simctl", "bootstatus", udid, "-b"], { timeout: 180_000 }, (err) => resolve(!err));
+    execFile("xcrun", ["simctl", "bootstatus", udid, "-b"], { timeout: 180_000, env: simulatorBootEnv(udid) }, (err) => resolve(!err));
   });
   if (!ready) {
     // bootstatus can exit non-zero even when the device is actually ready;
@@ -1477,6 +1479,8 @@ export interface SimMiddlewareOptions {
   allowAnyHostWhenInsecure?: boolean;
   /** Enable capture for devices started through this middleware. */
   networkCapture?: boolean;
+  /** Process-wide HTTP upstream proxy URL, optionally with Basic credentials. Unset resets new captures to direct. */
+  networkCaptureProxy?: string;
   /**
    * The server listens on loopback only. Without the token gate, network capture is refused unless
    * this is set: anyone who can load the preview could otherwise read captured traffic. An embedder
@@ -1856,6 +1860,7 @@ export async function handleCaptureEntriesRequest(
 }
 
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
+  validatedAdditionalDylibs();
   const streamSettings = options?.streamSettings ?? httpStreamSettingsFromLegacyCodec(options?.codec);
   const base = (options?.basePath ?? "/.sim").replace(/\/+$/, "");
   const helperPrefix = helperProxyPrefix(base);
@@ -1894,6 +1899,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     ? { "Content-Security-Policy": frameAncestorsPolicy(frameAncestors) }
     : {};
   const networkCapture = options?.networkCapture ?? false;
+  captureRuntime.setUpstream(parseCaptureProxy(options?.networkCaptureProxy));
   // Every host that mounts this middleware gets the same rule, so capture never runs on an ungated
   // preview that others can reach. The refusal covers the panel, the exec socket, and the CLI.
   captureRuntime.refuseCapture(
@@ -2355,7 +2361,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           gridStateToken(execToken, { requirePreviewToken, loopbackOnly: options?.loopbackOnly }),
           () => enableNetworkCaptureForStartedDevice(udid, networkCapture),
         ).then((error) => {
-          if (res.writableEnded) return;
+          if (res.writableEnded || res.destroyed) return;
           if (error) {
             res.writeHead(500, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: false, error }));
@@ -2363,6 +2369,10 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: true }));
           }
+        }).catch((error: unknown) => {
+          if (res.writableEnded || res.destroyed) return;
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
         });
       });
       return;
