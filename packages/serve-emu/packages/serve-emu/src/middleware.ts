@@ -3277,9 +3277,9 @@ export function createRouter(
   // Attach a video/gesture socket to an already-resolved, already-started
   // device. The transport ensures the serial before upgrading and passes it
   // here, so the app should exist; close defensively if it raced away.
-  // With a token, `request` is the upgrade the socket came from, and a socket
-  // without the token is closed, so a transport that skips `authorizeUpgrade`
-  // fails closed.
+  // `request` is the upgrade the socket came from. A socket without the token,
+  // or without a token from a host that is not allowed, is closed, so a
+  // transport that skips `authorizeUpgrade` or omits `request` fails closed.
   const attachWebSocket = (
     socket: StreamSocket,
     opts: { serial: string; frameMeta: boolean; video?: boolean; request?: Request },
@@ -3288,7 +3288,7 @@ export function createRouter(
       socket.close(1008, "Unauthorized");
       return;
     }
-    if (opts.request && !hostAllowed(opts.request)) {
+    if (!sessionToken && !allowAnyHostWhenInsecure && !(opts.request && hostAllowed(opts.request))) {
       socket.close(1008, "Host not allowed");
       return;
     }

@@ -22,6 +22,7 @@ function trackedRouter(
   allowedOrigins?: string[],
   appResponse: (request: Request) => Response = (request) =>
     Response.json({ ok: true, path: new URL(request.url).pathname }),
+  hostCheck = false,
 ) {
   const created: string[] = [];
   const launched: string[] = [];
@@ -53,7 +54,7 @@ function trackedRouter(
       return { serial: SERIAL, proc: null, ownsProcess: false, cameraFeed: false, stop: () => {} };
     },
   };
-  const router = createRouter(
+  const router = (hostCheck ? createRouterWithHostCheck : createRouter)(
     { ...(sessionToken === undefined ? {} : { sessionToken }), ...(allowedOrigins ? { allowedOrigins } : {}) },
     dependencies,
   );
@@ -435,6 +436,24 @@ describe("createRouter host check", () => {
       expect(await response.text()).toContain('does not answer for the host "rebound.example:3400"');
     }
     expect(router.authorizeUpgrade(new Request("http://rebound.example:3400/ws"))).toBe(false);
+  });
+
+  // A transport that skips `authorizeUpgrade` must not get an open socket from a rebinding page.
+  test("closes a socket whose upgrade request is missing or from another host name", async () => {
+    const { router, attached } = trackedRouter(undefined, undefined, undefined, /* hostCheck */ true);
+    await router.ensure(SERIAL);
+
+    for (const request of [undefined, new Request("http://rebound.example:3400/ws")]) {
+      const { socket, closes } = closableSocket();
+      router.attachWebSocket(socket, { serial: SERIAL, frameMeta: false, ...(request ? { request } : {}) });
+      expect(closes).toEqual([[1008, "Host not allowed"]]);
+    }
+    expect(attached).toEqual([]);
+
+    const { socket, closes } = closableSocket();
+    router.attachWebSocket(socket, { serial: SERIAL, frameMeta: false, request: new Request("http://127.0.0.1:3400/ws") });
+    expect(closes).toEqual([]);
+    expect(attached).toEqual([SERIAL]);
   });
 
   // The page is named, so the preflight answer depends only on the host.
