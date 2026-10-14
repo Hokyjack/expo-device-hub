@@ -125,6 +125,8 @@ function bodyText(part: RecordPart | undefined) {
 }
 
 export function describeFailure(raw: string): string {
+  const upstream = /refused HTTP CONNECT request: (\d{3}[^)]*)/.exec(raw);
+  if (upstream) return `The upstream proxy refused the connection: ${upstream[1]!.trim()}. (${raw})`;
   if (/Errno 61|Connect call failed|refused/i.test(raw)) {
     return `Nothing was listening at the address the app connected to. (${raw})`;
   }
@@ -221,7 +223,8 @@ export async function startMitmControl(options: {
     flowIds.delete(flow);
     forget(evictedFlows, flow);
   });
-  const fields = captureFieldSet(options.fields);
+  // @ref LLP 0005#what-is-recorded — changeable while the session runs; a record keeps the fields in force when it finishes
+  let fields = captureFieldSet(options.fields);
   let announceReady = () => {};
   const ready = new Promise<void>((resolve) => {
     announceReady = resolve;
@@ -304,5 +307,8 @@ export async function startMitmControl(options: {
     ready,
     /** Responses whose request had already left the store's list. */
     lateResponses: () => lateResponses,
+    setFields(next: readonly CaptureField[]): void {
+      fields = captureFieldSet(next);
+    },
   };
 }

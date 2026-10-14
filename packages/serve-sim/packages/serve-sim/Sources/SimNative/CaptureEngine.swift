@@ -384,6 +384,7 @@ actor CaptureEngine {
         let pick = await frameCapture.pickTimings()
         let timings = await frameCapture.captureTimings()
         let poll = await frameCapture.pollTimings()
+        let surface = await frameCapture.surfaceLossTimings()
         let flow = webRTCPublisher?.frameFlowCounts()
         let data = try JSONEncoder().encode(WebRTCSenderStatsReport(
             sessions: sessions,
@@ -414,7 +415,10 @@ actor CaptureEngine {
                 gapSumMs: Double(timings.gapSumNs) / 1_000_000,
                 stallSumMs: Double(timings.stallSumNs) / 1_000_000,
                 pollTicks: poll.ticks,
-                pollLateSumMs: Double(poll.lateSumNs) / 1_000_000
+                pollLateSumMs: Double(poll.lateSumNs) / 1_000_000,
+                surfaceLosses: surface.losses,
+                surfaceLostMs: Double(surface.lostNs) / 1_000_000,
+                rewires: surface.rewires
             ),
             encoder: webRTCPublisher?.encoderIdentity(
                 liveCodecs: sessions.filter(\.connected).compactMap(\.codec)
@@ -506,7 +510,7 @@ actor CaptureEngine {
             await stopNativeFrameDelivery()
             recordingFinalizing = false
             recordingFinishTask = nil
-            print("[recording] encoder=\(result.encoderID) encoded=\(result.encodedFrames) written=\(result.writtenFrames) repeated=\(result.repeatedFrames) dropped=\(result.droppedTicks) coalesced=\(result.coalescedDrops) sourceUnavailable=\(result.sourceUnavailableTicks) transferPool=\(result.transferPoolDrops) inFlight=\(result.inFlightDrops) writer=\(result.writerDrops) backpressure=\(result.writerBackpressureTicks) encodeFailures=\(result.encodeFailures) maxInFlight=\(result.maxInFlight) meanEncodeMs=\(result.meanEncodeMs) maxEncodeMs=\(result.maxEncodeMs)")
+            print("[recording] encoder=\(result.encoderID) encoded=\(result.encodedFrames) written=\(result.writtenFrames) repeated=\(result.repeatedFrames) dropped=\(result.droppedTicks) coalesced=\(result.coalescedDrops) sourceUnavailable=\(result.sourceUnavailableTicks) transferPool=\(result.transferPoolDrops) inFlight=\(result.inFlightDrops) writer=\(result.writerDrops) backpressure=\(result.writerBackpressureTicks) encodeFailures=\(result.encodeFailures) maxInFlight=\(result.maxInFlight) meanEncodeMs=\(result.meanEncodeMs) maxEncodeMs=\(result.maxEncodeMs) finalizeMs=\(result.finalizeMs)")
             return result.manifestPath
         } catch {
             self.recording = nil

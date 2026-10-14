@@ -112,6 +112,9 @@ export type DeviceSettingKey =
 /** Current backend-reported values. Missing keys are unavailable; `unsupported` keys are hidden. */
 export type DeviceSettings = Partial<Record<DeviceSettingKey, string>>;
 
+/** Settings availability for the selected device, independent of video and app activity. */
+export type DeviceSettingsStatus = 'idle' | 'loading' | 'ready' | 'error';
+
 /** Which emulator camera a feed drives. */
 export type DeviceCameraFacing = 'back' | 'front';
 
@@ -145,6 +148,9 @@ export interface DeviceActivitySample {
   netInBytesPerSec: number;
   netOutBytesPerSec: number;
 }
+
+/** Metrics discovery and stream readiness, independent of video and sample freshness. */
+export type DeviceActivityStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 /** Rolling activity history and health for the selected device. */
 export interface DeviceActivity {
@@ -615,11 +621,21 @@ export interface DeviceClient {
   /** Clear the event rows visible in this client. */
   clearEvents: () => void;
 
-  /** Live iOS app activity, or null before the first endpoint/config resolution. */
+  /** Live app activity, or null before the metrics endpoint is resolved. */
   activity: DeviceActivity | null;
+  /**
+   * `idle` while disabled or unsupported, `loading` during discovery/attachment,
+   * `ready` after stream metadata or a valid sample, then `error` on failure.
+   * Independent of video. Errors retain cached activity; quiet streams use `activity.stale`.
+   */
+  activityStatus: DeviceActivityStatus;
 
   /** Backend-supported simulator/device options and their current values. */
   deviceSettings: DeviceSettings | null;
+  /** `idle` while disabled, `loading` during discovery/initial read, then `ready` or `error`.
+   * Independent of video and app activity. Failed refreshes retain cached deviceSettings.
+   */
+  deviceSettingsStatus: DeviceSettingsStatus;
   /** Options currently being changed. Writes to other options remain available. */
   deviceSettingsPending: ReadonlySet<DeviceSettingKey>;
   /** Change one simulator/device option. Unsupported keys are ignored by each backend. */

@@ -117,6 +117,8 @@ Options:
       --network-capture
                       Record HTTP(S) for selected devices, including already booted ones
                       (requires mitmproxy; see Network capture below)
+      --network-capture-proxy <url>
+                      Forward captured traffic through an HTTP proxy (default: direct)
       --network-capture-field <field>
                       What to keep beyond metadata: header | query |
                       request-body | response-body (repeatable or
@@ -144,8 +146,10 @@ Options:
                       H.264/WebRTC target bitrate
       --video-fps <fps>
                       H.264/WebRTC frame rate (1-140)
+      --install-app-path <path>
+                      Install a local .app after boot, before any requested launch
       --launch-app-identifier <id>
-                      Bundle identifier of an installed app to launch once the
+                      Bundle identifier of the app to launch once the
                       simulator boots
       --launch-arg <arg>
                       Argument passed to the app when it launches (repeatable)
@@ -246,11 +250,33 @@ Supervisors can probe `GET /healthz` to confirm that the preview server is
 listening and `GET /readyz` to wait until the selected simulator and native
 capture session are ready. Both endpoints return JSON and disable caching.
 
-### Launching an app
+### Additional simulator dylibs
 
-`--launch-app-identifier <bundle-id>` launches an app that is already installed on the
-simulator, before the stream starts. Install it yourself first (`xcrun simctl install`);
-`serve-sim` only launches.
+Set `SERVE_SIM_ADDITIONAL_DYLIBS` to a colon-separated list of absolute dylib paths:
+
+```sh
+SERVE_SIM_ADDITIONAL_DYLIBS=/path/to/egress-guard.dylib serve-sim <udid>
+```
+
+Startup rejects relative, missing, or non-file paths before device operations.
+Paths retain whitespace. This validates file existence, not library compatibility;
+the caller must keep the libraries available for the session.
+
+The libraries are passed into Simulator boot and added alongside the capability
+loader for subsequent app launches. To affect processes started during boot, start
+with a shut-down simulator. Already-running processes keep their current images.
+The boot insert includes serve-sim's loader and inactive capture image so startup
+capabilities keep working; capture still needs to be enabled through its controls.
+The caller owns these libraries; session teardown preserves their insertion.
+
+### Installing and launching apps
+
+`--launch-app-identifier <bundle-id>` waits for Simulator boot to finish, then launches
+an already-installed app before the preview becomes ready. To install a downloaded
+build first, also pass `--install-app-path /path/to/Example.app`. The flags are
+independent: you can install without launching, or install one app and launch
+another already-installed app. Startup fails if boot, installation, launch or
+opening the URL fails. Without the install flag, install the app beforehand.
 
 ```sh
 serve-sim --launch-app-identifier host.exp.Exponent \
@@ -265,6 +291,9 @@ Simulator does not ask for confirmation. This matters for `exp://` deep links on
 Launching from `serve-sim` rather than beforehand matters because a second `simctl launch`
 on a running app is a no-op: it neither restarts the app nor applies new arguments. Owning
 the launch is what lets `serve-sim` attach to the process from the start.
+
+See [session startup](https://github.com/expo/expo-device-hub/blob/main/llp/0011-serve-sim-session-startup.explainer.md)
+for the startup order, readiness boundary, and teardown ownership.
 
 ### Camera
 
@@ -296,6 +325,7 @@ serve-sim capture har -o ./capture.har
 | Flag / command | What it does |
 | --- | --- |
 | `--network-capture` | Start capture on selected devices, including already booted ones |
+| `--network-capture-proxy <url>` | Forward captured traffic through one HTTP proxy, optionally with Basic credentials; `none` selects direct |
 | `--network-capture-field <field>` | Keep `header`, `query`, `request-body`, and/or `response-body` beyond metadata (repeatable or comma-separated). Default: none |
 | `serve-sim capture har -o <path>` | Copy the session's recorded requests, then follow the live stream into a HAR (and JSON next to it). Keeps the newest 10,000 requests |
 
@@ -304,6 +334,18 @@ Use **Enable capture** in the tools panel to start without rebooting. Turning ca
 While capturing, the tools panel lists requests. Session files live under `$TMPDIR/serve-sim/capture-<udid>/` and are removed when capture stops. Capture HTTP routes require the preview session Bearer token.
 
 Requires [mitmproxy](https://mitmproxy.org/) on the host. Relaunch apps after enabling so they pick up the proxy. Details on redaction and risks: [Network capture](https://github.com/expo/expo-device-hub/blob/main/llp/0005-serve-sim-network-capture.explainer.md).
+
+Captured requests go direct unless `--network-capture-proxy http://host:port` names an upstream HTTP
+proxy. Basic proxy authentication is supported with
+`--network-capture-proxy http://user:password@host:port`. Set `none` to send captured traffic direct.
+Configured upstreams require the preview server, so `--detach` and `--no-preview` are rejected.
+Omitting the option or using `none` remains allowed in those modes.
+macOS proxy settings, PAC files, and auto-discovery are not read.
+
+Embedded middleware mounts share one capture runtime and upstream policy per process. Creating a
+mount sets that policy for new capture sessions; omitting `networkCaptureProxy` resets it to direct.
+Existing sessions keep their upstream until capture is restarted. Use separate processes when
+mounts need different proxies.
 
 ## Connectors
 
