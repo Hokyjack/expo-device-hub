@@ -29,7 +29,6 @@ import {
   ANDROID_RECORDING_STOP_ROUTE,
   handleEasEndpoint,
   HEALTH_ROUTE,
-  METRICS_ROUTE,
   READY_ROUTE,
 } from './eas-endpoints';
 import { MOUNT_PATH } from './mount';
@@ -146,16 +145,6 @@ function isEmuPath(pathname: string): boolean {
   return pathname === EMU_PREFIX || pathname.startsWith(`${EMU_PREFIX}/`);
 }
 
-const EAS_ROUTES = new Set([HEALTH_ROUTE, READY_ROUTE, METRICS_ROUTE, ANDROID_RECORDING_STOP_ROUTE]);
-
-/**
- * Whether the Hub or a backend answers a path itself. Any other path is the host's, such as the
- * Hub's static files, or a host's own route when it embeds the Hub.
- */
-function hubOwnsPath(pathname: string): boolean {
-  return isSimPath(pathname) || isEmuPath(pathname) || pathname.startsWith(HUB_API_PREFIX) || EAS_ROUTES.has(pathname);
-}
-
 // serve-sim drops empty segments and reads the first one as the device, so
 // `/helper/<udid>//recording/video/` is recording control too.
 function isSimRecordingControl(pathname: string): boolean {
@@ -199,13 +188,13 @@ function socketOriginAllowed(request: Request): boolean {
 }
 
 /**
- * Whether a request that can change state may run. A browser page needs the Hub's own origin or a
- * `--cors-origin` origin, as serve-emu's router and serve-sim require: a loopback page may read,
- * but not act. A request without `Origin`, such as a CLI or EAS, is not affected. This holds with
- * or without a token, because a cross-site page can send a form-like POST that needs no preflight.
+ * Whether a page may run a device action. A browser page needs the Hub's own origin or a
+ * `--cors-origin` origin, as serve-emu's router and serve-sim require for theirs: a loopback page
+ * may read, but not act. A request without `Origin`, such as a CLI or EAS, is not affected. This
+ * holds with or without a token, because a cross-site page can send a form-like POST that needs no
+ * preflight.
  */
 function stateChangeAllowed(request: Request): boolean {
-  if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') return true;
   const header = request.headers.get('origin');
   if (header === null) return true;
   if (request.headers.get('sec-fetch-site') === 'same-origin') return true;
@@ -217,6 +206,23 @@ function stateChangeAllowed(request: Request): boolean {
   }
   if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false;
   return origin.origin === new URL(request.url).origin || corsOriginNamed(origin);
+}
+
+/** The response that refuses a device action, or null to run it. */
+function refuseDeviceAction(request: Request): Response | null {
+  if (request.method !== 'POST') {
+    return jsonResponse({ ok: false, error: 'Method Not Allowed' }, 405);
+  }
+  if (!stateChangeAllowed(request)) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: 'This page may not change devices through the Hub. Start the Hub with --cors-origin for its origin.',
+      },
+      403,
+    );
+  }
+  return null;
 }
 
 /** What a preflight for one of the Hub's own routes may ask for, as serve-sim's answer names. */
@@ -277,18 +283,6 @@ export default async function handler(request: Request): Promise<Response | null
       headers: { ...HUB_PREFLIGHT_HEADERS, ...corsHeadersForPath(request, pathname) },
     });
   }
-  // Only on the Hub's own paths, so a host's own route behind the Hub keeps its own answer.
-  if (hubOwnsPath(pathname) && !stateChangeAllowed(request)) {
-    return withFramePolicy(
-      Response.json(
-        {
-          ok: false,
-          error: 'This page may not change devices through the Hub. Start the Hub with --cors-origin for its origin.',
-        },
-        { status: 403, headers: corsHeadersForPath(request, pathname) },
-      ),
-    );
-  }
   const gated = gateRequest(request, pathname);
   if (gated instanceof Response) return gated;
   try {
@@ -297,7 +291,7 @@ export default async function handler(request: Request): Promise<Response | null
       // A path the Hub or a backend owns but does not route still answers here, with its CORS
       // headers, so an allowed page can tell a missing route from a network error. Other paths
       // fall through to the host, which serves the Hub's static files.
-      return hubOwnsPath(pathname)
+      return isBackend || pathname.startsWith(HUB_API_PREFIX)
         ? withFramePolicy(
             Response.json(
               { ok: false, error: 'Not Found' },
@@ -350,9 +344,8 @@ async function routeRequest(request: Request): Promise<Response | null> {
   }
 
   if (pathname === SHUTDOWN_DEVICE_ROUTE || pathname === REMOVE_DEVICE_ROUTE) {
-    if (request.method !== 'POST') {
-      return jsonResponse({ ok: false, error: 'Method Not Allowed' }, 405);
-    }
+    const refused = refuseDeviceAction(request);
+    if (refused) return refused;
 
     const action = await parseDeviceAction(request);
     if (!action) {
@@ -372,9 +365,8 @@ async function routeRequest(request: Request): Promise<Response | null> {
   }
 
   if (pathname === BOOT_DEVICE_ROUTE) {
-    if (request.method !== 'POST') {
-      return jsonResponse({ ok: false, error: 'Method Not Allowed' }, 405);
-    }
+    const refused = refuseDeviceAction(request);
+    if (refused) return refused;
 
     const action = await parseDeviceAction(request);
     if (!action) {
@@ -391,9 +383,8 @@ async function routeRequest(request: Request): Promise<Response | null> {
   }
 
   if (pathname === CREATE_DEVICE_ROUTE) {
-    if (request.method !== 'POST') {
-      return jsonResponse({ ok: false, error: 'Method Not Allowed' }, 405);
-    }
+    const refused = refuseDeviceAction(request);
+    if (refused) return refused;
 
     const action = await parseCreateDeviceAction(request);
     if (!action) {

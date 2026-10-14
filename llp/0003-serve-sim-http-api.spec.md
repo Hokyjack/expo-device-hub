@@ -231,8 +231,9 @@ no `Origin`, such as the CLI. Anything else gets 403 before the route runs. CORS
 alone does not stop such a request: another site's page can send a form-like
 `POST` with no preflight, and only its answer is hidden [observed:
 `stateChangeOriginAllowed` in `src/session-auth.ts`]. serve-emu's router and the
-Hub apply the same rule. The Hub applies it only to the paths it or a backend
-owns, and leaves any other path to the host that embeds it.
+Hub apply the same rule. Each checks it in its own routes: the Hub in its device
+actions, and each backend in its router, so a path none of them routes goes to
+the host that embeds the Hub unchanged.
 
 A gated request still answers 401 with the CORS headers attached, so the browser
 can read the status rather than reporting an opaque network error. A route that
