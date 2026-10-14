@@ -236,6 +236,16 @@ describe('the Hub under a session token', () => {
     }
   });
 
+  // A host that embeds the Hub may have its own routes behind it, which answer for themselves.
+  test('leaves a state change on a path the Hub does not own to its host', async () => {
+    const response = await request('/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', Authorization: `Bearer ${TOKEN}`, Origin: 'https://elsewhere.example' },
+      body: '{}',
+    });
+    expect(response).toBeNull();
+  });
+
   // A browser sends the preflight first, then the request with the token it has.
   test('lets a --cors-origin page read every kind of token refusal after its preflight', async () => {
     // Each backend's real preflight lets the page send the token header at all.

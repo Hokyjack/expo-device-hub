@@ -29,6 +29,7 @@ import {
   ANDROID_RECORDING_STOP_ROUTE,
   handleEasEndpoint,
   HEALTH_ROUTE,
+  METRICS_ROUTE,
   READY_ROUTE,
 } from './eas-endpoints';
 import { MOUNT_PATH } from './mount';
@@ -143,6 +144,16 @@ function isSimPath(pathname: string): boolean {
 
 function isEmuPath(pathname: string): boolean {
   return pathname === EMU_PREFIX || pathname.startsWith(`${EMU_PREFIX}/`);
+}
+
+const EAS_ROUTES = new Set([HEALTH_ROUTE, READY_ROUTE, METRICS_ROUTE, ANDROID_RECORDING_STOP_ROUTE]);
+
+/**
+ * Whether the Hub or a backend answers a path itself. Any other path is the host's, such as the
+ * Hub's static files, or a host's own route when it embeds the Hub.
+ */
+function hubOwnsPath(pathname: string): boolean {
+  return isSimPath(pathname) || isEmuPath(pathname) || pathname.startsWith(HUB_API_PREFIX) || EAS_ROUTES.has(pathname);
 }
 
 // serve-sim drops empty segments and reads the first one as the device, so
@@ -266,7 +277,8 @@ export default async function handler(request: Request): Promise<Response | null
       headers: { ...HUB_PREFLIGHT_HEADERS, ...corsHeadersForPath(request, pathname) },
     });
   }
-  if (!stateChangeAllowed(request)) {
+  // Only on the Hub's own paths, so a host's own route behind the Hub keeps its own answer.
+  if (hubOwnsPath(pathname) && !stateChangeAllowed(request)) {
     return withFramePolicy(
       Response.json(
         {
@@ -285,7 +297,7 @@ export default async function handler(request: Request): Promise<Response | null
       // A path the Hub or a backend owns but does not route still answers here, with its CORS
       // headers, so an allowed page can tell a missing route from a network error. Other paths
       // fall through to the host, which serves the Hub's static files.
-      return isBackend || pathname.startsWith(HUB_API_PREFIX)
+      return hubOwnsPath(pathname)
         ? withFramePolicy(
             Response.json(
               { ok: false, error: 'Not Found' },
