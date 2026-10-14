@@ -399,6 +399,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
   const imgRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [webRtcVideoElement, setWebRtcVideoElement] = useState<HTMLVideoElement | null>(null);
   const streamUrlRef = useRef<string | null>(null);
   const [avccFallback, dispatchAvccFallback] = useReducer(avccFallbackReducer, initialAvccFallback);
   const [webRtcCodec, setWebRtcCodecState] = useState<DeviceWebRtcCodec>('h264');
@@ -444,16 +445,19 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     (el: HTMLCanvasElement | HTMLImageElement | HTMLVideoElement | null) => {
       if (useWebRtc) {
         videoRef.current = (el as HTMLVideoElement) ?? null;
+        setWebRtcVideoElement(videoRef.current);
         canvasRef.current = null;
         imgRef.current = null;
       } else if (useAvcc) {
         canvasRef.current = (el as HTMLCanvasElement) ?? null;
         videoRef.current = null;
+        setWebRtcVideoElement(null);
         imgRef.current = null;
       } else {
         imgRef.current = (el as HTMLImageElement) ?? null;
         canvasRef.current = null;
         videoRef.current = null;
+        setWebRtcVideoElement(null);
         if (el) applyStreamSrc();
       }
     },
@@ -965,9 +969,10 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     }
   }, [useWebRtc, webRtcError, webRtcStream, webRtcCodecsExhausted]);
 
+  // @ref LLP 0012#hidden-tabs-and-startup-diagnosis — surface remounts keep the peer
   useEffect(() => {
     if (!useWebRtc) return;
-    const video = videoRef.current;
+    const video = webRtcVideoElement;
     if (!video) return;
     let stopped = false;
     let firstFrame = true;
@@ -996,6 +1001,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
       }
     };
     const onVideoFrame: VideoFrameRequestCallback = (_now, metadata) => {
+      if (stopped) return;
       const presentedFrameDelta = presentedVideoFrameDelta(
         previousPresentedFrames,
         metadata.presentedFrames,
@@ -1033,7 +1039,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
       }
       video.srcObject = null;
     };
-  }, [useWebRtc, webRtcStream, markWebRtcFrameDecoded, onAvccFrame]);
+  }, [useWebRtc, webRtcStream, webRtcVideoElement, markWebRtcFrameDecoded, onAvccFrame]);
 
   // ── H.264 AVCC (WebCodecs) with serve-sim's MJPEG fallback policy. ──
   useEffect(() => {
