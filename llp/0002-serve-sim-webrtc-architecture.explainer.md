@@ -5,8 +5,8 @@
 **Systems:** ServeSim
 **Author:** Imported from expo/serve-sim in #79 (original authors are in that repo); later edits by Gabe Debes
 **Date:** 2026-09-23
-**Revised:** 2026-10-06 (checked against the code at 5b273a8f; added the `--transport webrtc` lock, HTTP fallback, stall recovery, panel feeds, input-socket cap, and token gate; corrected the H.264 level rationale for the shared encoder) · 2026-10-02 (moved into the LLP corpus from `packages/serve-sim/packages/serve-sim/docs/webrtc-architecture.md`; links and paths updated)
-**Related:** LLP 0001, LLP 0003
+**Revised:** 2026-10-14 (checked against the code at 8edb2dea; added the `--transport webrtc` lock, HTTP fallback, stall recovery, panel feeds, input-socket cap and clipboard barrier, and token gate; corrected the H.264 level rationale for the shared encoder) · 2026-10-02 (moved into the LLP corpus from `packages/serve-sim/packages/serve-sim/docs/webrtc-architecture.md`; links and paths updated)
+**Related:** LLP 0001, LLP 0003, LLP 0010
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
 
@@ -188,8 +188,9 @@ a frame while no peer is active exits before conversion or encoding.
    because an encoder pushed past that level's frame size produces no frames at all
    [observed: comments on `H264LevelPolicy` and `StreamEncodePolicy.encodeMaxLongEdge`].
    The shared H.264 encoder itself does not read the offer's level: it opens a
-   VideoToolbox session with an automatic level [observed: `SharedWebRTCEncoder.init`,
-   `H264Encoder.swift`]. This is SDP
+   VideoToolbox session with an automatic level [observed: `SharedWebRTCEncoder.init`
+   creates a constrained-baseline `H264Encoder`, which sets
+   `kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel` in `H264Encoder.swift`]. This is SDP
    munging, not negotiation: `level-asymmetry-allowed=1` lets the two directions
    differ, it does not license sending above what the peer said it decodes. It rests on
    measurement — Chrome and Safari both decode a 1206x2622 stream while advertising 3.1 —
@@ -272,7 +273,10 @@ simulator and closes any further socket with code 1013 [observed:
 `MAX_HID_SOCKETS`, `DeviceSession.attachHidSocket`]. Admitted sockets have equal
 control access, with no exclusive-controller lease. Ordered input, such as
 touches, is queued per socket and drained one operation at a time, taking turns
-between sockets [observed: `DeviceSession.drainInputOperations`]. Messages are
+between sockets [observed: `DeviceSession.drainInputOperations`]. A paste or a copy
+is a barrier in that queue: older input runs first, and later input waits for it
+([LLP 0010](0010-serve-sim-clipboard.explainer.md#paste)) [observed:
+`clipboardInputBarriers` in `DeviceSession.drainInputOperations`]. Messages are
 ordered within one viewer's socket; operations from different viewers can
 interleave, so two people dragging at exactly the same time still contend for
 the simulator's single synthetic touch surface.

@@ -14,10 +14,10 @@ system daemons free of framework dependencies.
 
 ## The problem
 
-serve-sim fakes things inside apps: the camera, the proxy settings that network
-capture needs, whatever comes next. Faking them means running code inside the
-app's own process, because the APIs being replaced are in-process ones such as
-`AVCaptureDevice`.
+serve-sim runs its own code inside apps: it fakes the camera, reads the
+pasteboard, sets the proxy that network capture needs, and more can follow. That
+code must run inside the app's own process, because the APIs it replaces or calls
+are in-process ones such as `AVCaptureDevice` and `UIPasteboard`.
 
 The only mechanism for that is `DYLD_INSERT_LIBRARIES`, which dyld applies when
 a process starts. Two facts follow, and they shape everything else:
@@ -46,9 +46,10 @@ launchctl setenv DYLD_INSERT_LIBRARIES  →  libServeSimCapabilityLoader.dylib  
 
 The camera injector is the example here, but in this repository the camera does
 not go through the capability loader yet (see [Not there yet](#not-there-yet)).
-The only registered capability is network capture, `networkCapture` [observed:
-`registerCapability(captureRuntime.capability)` in `src/index.ts`;
-`src/capture/runtime.ts`].
+serve-sim registers two capabilities: `clipboard`, the pasteboard reader of
+[LLP 0010](0010-serve-sim-clipboard.explainer.md), and `networkCapture`
+[observed: the `registerCapability` calls in `src/index.ts`; `clipboardCapability`
+in `src/sim-pasteboard-reader.ts`; `src/capture/runtime.ts`].
 
 The capability loader links **only libSystem**. Deferred capabilities are loaded through it. Startup capabilities are preloaded alongside
 it and must also link only libSystem; their constructors delegate scope and configuration
@@ -155,8 +156,8 @@ something that reliably removes it:
 
 - The session arms the capability loader before apps launch, even with no capabilities
   enabled. Disabling a capability leaves it armed until session teardown [observed:
-  `disableCapabilityUnlocked` republishes through `publishLaunchState`, which arms
-  the loader, in `src/launch-manager.ts`].
+  `disableCapabilityUnlocked` republishes through `withdrawLaunchState` and
+  `publishLaunchState`, which arms the loader, in `src/launch-manager.ts`].
 - Re-executed stream helpers carry `SERVE_SIM_STREAM_HELPER=1` and skip arming,
   because they can outlive the session that owns the insert.
 - The process that arms it registers the teardown first, on `exit` and on
@@ -192,12 +193,13 @@ forgotten:
 
 - **The camera is not a capability, and its per-launch path skips the capability
   loader.** `serve-sim camera <bundle-id>` relaunches the app with
-  `SIMCTL_CHILD_DYLD_INSERT_LIBRARIES` set to the camera dylib alone [observed:
+  `SIMCTL_CHILD_DYLD_INSERT_LIBRARIES` set to the camera dylib and the
+  `SERVE_SIM_ADDITIONAL_DYLIBS` paths, without the capability loader [observed:
   `camera` in `src/index.ts`]. `childLaunchEnv` builds an insert of the capability
-  dylib plus the capability loader, but only its tests call it [observed:
-  `git grep childLaunchEnv`]. The per-launch path should insert the capability
-  loader alone and let it load the capability, so there is one loading path rather
-  than two.
+  dylib, the capability loader, and the `SERVE_SIM_ADDITIONAL_DYLIBS` paths, but
+  only its tests call it [observed: `git grep childLaunchEnv`]. The per-launch path
+  should insert the capability loader alone and let it load the capability, so there
+  is one loading path rather than two.
 - The camera injector does not post `AVCaptureDeviceWasConnectedNotification`
   (see [Arriving late](#arriving-late)).
 - `+[AVCaptureDevice defaultDeviceWithMediaType:]` is not swizzled, only the

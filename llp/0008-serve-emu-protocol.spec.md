@@ -5,7 +5,7 @@
 **Systems:** ServeEmu
 **Author:** Imported from expo/serve-emu in #78 (original authors are in that repo)
 **Date:** 2026-09-09
-**Revised:** 2026-10-06 (checked against the code at 5b273a8f; scrcpy pin location, stream modes, `video-session` after #239, per-entry-point `SEMU` versions, check command) · 2026-10-02 (moved into the LLP corpus from `packages/serve-emu/packages/serve-emu/docs/protocol.md`; links and paths updated)
+**Revised:** 2026-10-14 (checked against the code at 8edb2dea; scrcpy pin location, stream modes, `video-session` after #239 and after a capture replacement, per-entry-point `SEMU` versions, which WebSocket JSON messages the README covers, check command) · 2026-10-02 (moved into the LLP corpus from `packages/serve-emu/packages/serve-emu/docs/protocol.md`; links and paths updated)
 **Related:** LLP 0009
 
 > File paths such as `src/…` are relative to `packages/serve-emu/packages/serve-emu`, unless the text gives a path from the repository root.
@@ -133,12 +133,14 @@ PTS bits are zero in the upstream v4 stream).
 
 After a session packet, `serve-emu` drops its cached configuration and holds
 every video client until the next key frame. Since #239, the router in
-`src/middleware.ts` sends clients a JSON `video-session` message only when the
-width or height changed, because a message for an unchanged size sent WebCodecs
-viewers into a key-frame reset loop [observed: `startCaptureReader` in
-`src/middleware.ts`; `.changeset/physical-android-scrcpy-default.md`]. The
-standalone server in `src/server.ts` still sends `video-session` for every
-session packet.
+`src/middleware.ts` sends clients a JSON `video-session` message for a session
+packet only when the width or height changed, because a message for an
+unchanged size sent WebCodecs viewers into a key-frame reset loop [observed:
+`startCaptureReader` in `src/middleware.ts`; the `ffa6c99` (#239) entry in
+`packages/expo-device-hub/CHANGELOG.md`]. When the router replaces the capture
+after a stream-settings change, it still sends `video-session` to every video
+client (`activateCapture`). The standalone server in `src/server.ts` still
+sends `video-session` for every session packet.
 
 Codec-configuration packets contain SPS/PPS data. `serve-emu` caches the latest
 configuration and prepends it to key frames so that a browser joining or
@@ -174,10 +176,14 @@ Plain `/ws` clients receive the raw Annex-B access unit in each binary WebSocket
 message. Clients connecting to `/ws?frame-meta=1` receive one `SEMU` header
 followed by the Annex-B access unit. There is no payload-length field because the
 WebSocket message boundary supplies it. Clients connecting with `video=0` receive
-no video; a WebRTC viewer uses such a socket for input only. JSON text messages
-on the same socket (gestures, `reset-video`, acknowledgements, and
-`video-session`) are described in the
-[package README](../packages/serve-emu/README.md#websocket-api), not here.
+no video; a WebRTC viewer uses such a socket for input only. The same socket
+also carries JSON text messages. The
+[package README](../packages/serve-emu/README.md#websocket-api) describes the
+gesture and `reset-video` messages that clients send, but not the server's
+replies. [Video packets](#video-packets) describes `video-session`. For the
+acknowledgements, read `wantsAck()` and the WebSocket message handlers in
+`src/middleware.ts` and `src/server.ts`; the two entry points send different
+shapes.
 
 ### v1 (16 bytes)
 

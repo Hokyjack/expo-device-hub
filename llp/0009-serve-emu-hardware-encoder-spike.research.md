@@ -5,12 +5,12 @@
 **Systems:** ServeEmu
 **Author:** Krystof Woldrich
 **Date:** 2026-09-10
-**Revised:** 2026-10-06 (checked against the code at 5b273a8f; added the outcome note, resolved the reference to an unpublished plan, named the encoder fields) · 2026-10-02 (moved into the LLP corpus from `packages/serve-emu/packages/serve-emu/docs/hardware-encoder-spike.md`; links and paths updated)
+**Revised:** 2026-10-14 (checked against the code at 8edb2dea; added the outcome note, resolved the reference to an unpublished plan, named the encoder fields, re-ran the hardware tests) · 2026-10-02 (moved into the LLP corpus from `packages/serve-emu/packages/serve-emu/docs/hardware-encoder-spike.md`; links and paths updated)
 **Related:** LLP 0008
 
 > File paths such as `src/…` are relative to `packages/serve-emu/packages/serve-emu`, unless the text gives a path from the repository root.
 
-> **Outcome (checked 2026-10-06 against 5b273a8f).** The spike shipped as an
+> **Outcome (checked 2026-10-14 against 8edb2dea).** The spike shipped as an
 > opt-in hardware encoder for the emulator-only `grpc-screenshot` stream mode;
 > scrcpy streams are encoded on the device and do not use it. #94 added the
 > strict resolver, probes, and backend arguments in `src/h264-encoder.ts`. #95
@@ -20,7 +20,9 @@
 > (`DEFAULT_GRPC_ENCODER`). The VideoToolbox arguments below match
 > `ffmpegEncoderArgs()`. On 2026-10-06, an agent ran the real-hardware test and
 > its companion test on Apple M2, macOS 26.6.2, FFmpeg 8.1.2; both passed with
-> `h264_videotoolbox`. NVENC and VAAPI still have only the unit coverage
+> `h264_videotoolbox`. On 2026-10-14, at 8edb2dea, both passed again with
+> `h264_videotoolbox` on Apple M2, macOS 27.0.1, FFmpeg 8.1.2. NVENC and VAAPI
+> still have only the unit coverage
 > described under "Other hosts"; that run did not exercise them on Linux
 > hardware. The rest of this document is the spike record from 2026-09-10.
 

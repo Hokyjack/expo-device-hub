@@ -5,7 +5,7 @@
 **Systems:** ServeSim, HubClient
 **Author:** Gabe Debes
 **Date:** 2026-09-23
-**Revised:** 2026-10-14 (checked against the code at 8edb2dea; added the missing helper, crash, network capture, DevTools frontend and model routes; the exec channel's and capture routes' own token checks; the bearer rule for recording status; the recording lease) · 2026-10-12 (rotation readback contract; added installed-app launch, control, data-file and upload actions)
+**Revised:** 2026-10-14 (checked against the code at 8edb2dea; added the missing helper, crash, network capture, DevTools frontend and model routes; the device fallback; the token checks that apply without `--require-token`; the bearer rule for recording status; the recording lease) · 2026-10-12 (rotation readback contract; added installed-app launch, control, data-file and upload actions)
 **Related:** LLP 0001, LLP 0002, LLP 0004, LLP 0005, LLP 0010
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
@@ -18,6 +18,10 @@ Paths are relative to the mount point, which is `/` for a standalone
 All are `GET` unless marked. `?device=<udid>` selects a simulator. Without it, a
 route uses the middleware's `device` option, which a standalone `serve-sim` sets
 to its first target device, and otherwise the first registered simulator.
+When neither is set, `/api/screenshot` and `/api/pasteboard` use the first
+booted simulator instead.
+`/api/event-log` and its stream use only `?device=`; without it, they show the
+events of every device. A `/helper/<udid>/…` route takes the udid from its path.
 
 | Path | What it is |
 | --- | --- |
@@ -27,7 +31,7 @@ to its first target device, and otherwise the first registered simulator.
 | `/api/screenshot` | `POST`. A still PNG. |
 | `/api/apps/icon?bundleId=<id>` | An installed app's icon, `{ok, bundleId, icon: {mimeType, data} \| null}`, the same shape as serve-emu's route, with `bundleId` in place of `packageName`. `icon` is null when the app has its icon only in `Assets.car`. 404 when the app is not installed, 503 when `simctl` cannot answer (retry). |
 | `/api/pasteboard` | `POST` reads the simulator pasteboard as `{ok, text}`; `?copy=1` presses Command+C first; `PUT` with `{"text": …}` writes it. See [Pasteboard](#pasteboard). |
-| `/helper/<udid>/…` | The device's stream and control routes, served in-process: `stream.mjpeg`, `stream.avcc`, `stream-settings`, `config`, `health`, `ax`, `foreground`, `camera/status`, `webrtc/offer` and `webrtc/close` (`POST`), `webrtc/stats`, and the stream and WebRTC routes for one display under `panel/<1\|3>/`. |
+| `/helper/<udid>/…` | The device's stream and control routes, served in-process: `stream.mjpeg`, `stream.avcc`, `stream-settings` (`PATCH` with a JSON body changes the encoder settings), `config`, `health`, `ax`, `foreground`, `camera/status`, `webrtc/offer` and `webrtc/close` (`POST`), `webrtc/stats`, and the stream and WebRTC routes for one display under `panel/<1\|3>/`. |
 | `/helper/<udid>/recording/video` | `GET` reports whether a recording is active; `POST` starts, `PUT` renews, and `DELETE` finalizes a native-size H.264 recording. Mutations require a recording ID. When `--require-token` is set, every method, `GET` included, requires the bearer token. |
 | `/api/events`, `/api/event-log`, `/api/event-log/events` | Device events and the recorded log. |
 | `/metrics` | CPU, memory and network samples, one per second. |
@@ -75,7 +79,7 @@ result until another recording starts.
 ## Pasteboard
 
 `POST /api/pasteboard` reads the simulator pasteboard; `PUT /api/pasteboard` with
-`{"text": "…"}` writes it. Besides the token, both need a browser `Origin`: the
+`{"text": "…"}` writes it. Besides the bearer token, both need a browser `Origin`: the
 preview's own origin or one that the CORS policy allows. A request without an
 `Origin` gets 403. Text over 4 MiB, in either direction, returns 413. A read
 that neither `simctl pbpaste` nor the app reader can answer returns 503 with a
@@ -119,9 +123,10 @@ including a cross-origin web page using a simple POST, can choose a recording
 output directory that the server process can write.
 Use `--require-token` when that access should be restricted.
 
-Two parts of the server check the token even without the flag. The exec channel requires it
+Three parts of the server check the token even without the flag. The exec channel requires it
 at its handshake or in its first frame (see [WebSockets](#websockets)); the
-preview page has it. The network capture routes always require the bearer token
+preview page has it. `/api/pasteboard` always requires the bearer token (see
+[Pasteboard](#pasteboard)). The network capture routes always require the bearer token
 or, under `--require-token`, the cookie. They never accept `?token=`, answer
 only same-origin requests, and accept only `GET` and `HEAD`. See
 [LLP 0005](0005-serve-sim-network-capture.explainer.md#remote-and-hosted-use).
@@ -144,8 +149,8 @@ Authorization: Bearer <token>
 ```
 
 A request that is not a document navigation may also present `?token=`
-directly, and is answered rather than redirected. The network capture routes
-are the exception.
+directly, and is answered rather than redirected. The network capture routes,
+`/api/pasteboard`, and recording control are the exceptions.
 
 **The cookie, for a page the server itself served.** A document navigation
 carrying `?token=` is answered with a 302 that sets the cookie and drops the
@@ -271,6 +276,9 @@ socket that does not present the token within 10 seconds.
 the DevTools bridge come from `GET /devtools`, which returns a
 `webSocketDebuggerUrl` per target.
 
+The CDP bridge forwards frames verbatim in both directions. The token
+subprotocol is not forwarded upstream, so the credential stops at serve-sim.
+
 ### CLI input admission
 
 Helpers advertise `inputAdmission: true` in their state record and send the
@@ -280,9 +288,6 @@ which fails the command even if the refusal arrives after the transport opens.
 A connection that never admits input fails after ten seconds. Older helpers
 without the state flag retain their open-based behavior [observed:
 `src/socket/cli-input.ts`, `src/index.ts`, `src/state.ts`].
-
-The CDP bridge forwards frames verbatim in both directions. The token
-subprotocol is not forwarded upstream, so the credential stops at serve-sim.
 
 ### Rotation readback
 

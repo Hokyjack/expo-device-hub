@@ -41,12 +41,15 @@ commands, plus the state that serve-sim reads and restores at startup (see
 [Hinge state at startup](#hinge-state-at-startup)). serve-sim does not monitor the live
 hinge sensor for changes made externally in Device Hub. The streamed display
 and its orientation still follow native display readback. Apart from the startup
-read, serve-sim reads the live hinge angle once in three cases only: a command
-that arrives while no angle is known, a face-down request before this session
-has confirmed an angle, and recovery after a failed hinge command. The
-recovery also restores the last successful native sends for Table Mode and
-physical orientation [observed: `queueHingeControl` in `src/device-session.ts`;
-`CoreDeviceBridge.hingeState` in `Sources/SimNative/CoreDeviceBridge.swift`].
+read, serve-sim reads the live hinge angle again in three cases only: the first
+hinge command while no angle is known yet (see [Hinge state at startup](#hinge-state-at-startup)),
+a face-down request while the angle is still unknown, and recovery after a
+failed hinge command. Recovery takes Table Mode and physical orientation from
+the last successful native sends. The native layer forgets both when the live
+angle does not match the last angle it sent; Table Mode is then unknown, and
+serve-sim keeps its previous physical orientation [observed: `queueHingeControl`
+in `src/device-session.ts`; `CoreDeviceBridge.hingeState` in
+`Sources/SimNative/CoreDeviceBridge.swift`].
 
 Table Mode eligibility requires a known physical orientation, established by
 choosing a preset, by the `physical` command below, or restored at startup from
@@ -326,8 +329,9 @@ for each display, `panel/1` for the cover and `panel/3` for the inner display.
 A fixed-panel capture never substitutes the other panel, and the feeds do not
 change input state [observed: `duoPanelUrl` in
 `src/client/components/duo-panel-streams.tsx`; `handlePanel` in
-`src/device-session.ts`]. The 3D preview retains one model while the active
-display changes between the cover and inner panels. Pointer input is projected
+`src/device-session.ts`; `fixedScreenID` in `FramebufferSelectionPolicy`].
+The 3D preview retains one model while the active display changes between the
+cover and inner panels. Pointer input is projected
 onto the visible active display and mapped back to its streamed coordinates.
 
 In the flat framed view used for AX inspection, the closed screen uses

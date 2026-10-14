@@ -5,7 +5,7 @@
 **Systems:** ServeSim, HubClient
 **Author:** Gabe Debes
 **Date:** 2026-09-23
-**Revised:** 2026-10-14 (checked against the code at 8edb2dea; separated Apple's scroll mechanism from serve-sim's touch-drag scroll, marked the pointer-service plan as not shipped, removed stale code names and a private link) · 2026-10-08 (paced wheel delivery, edge handling, scroll-to-touch handoff, and browser wheel coalescing)
+**Revised:** 2026-10-14 (checked against the code at 8edb2dea; separated Apple's scroll mechanism from serve-sim's touch-drag scroll, marked the pointer-service plan as not shipped, measured the paced wheel delivery on a simulator, removed stale code names and a private link) · 2026-10-08 (paced wheel delivery, edge handling, scroll-to-touch handoff, and browser wheel coalescing)
 
 The SimulatorKit research was imported from [expo/serve-sim](https://github.com/expo/serve-sim)
 in [PR #79](https://github.com/expo/expo-device-hub/pull/79) and moved into the LLP corpus
@@ -20,7 +20,7 @@ in [PR #245](https://github.com/expo/expo-device-hub/pull/245).
 > **Status:** the component map, lifecycle, and message layouts come from static
 > analysis. The [Validation log](#validation-log) records behavioral results from a
 > running simulator. [Resolution: touch-drag scroll (shipped)](#resolution-touch-drag-scroll-shipped)
-> describes what serve-sim ships.
+> and the two sections after it describe what serve-sim ships.
 
 ## TL;DR
 
@@ -42,7 +42,7 @@ drives `SimDisplayView` / `SimHIDCaptureManager` in SimulatorKit.
 **What serve-sim does.** serve-sim cannot use Apple's mechanism, because it needs
 private Apple entitlements (see [Why the pointer path is infeasible for
 serve-sim](#why-the-pointer-path-is-infeasible-for-serve-sim-definitive)). Instead,
-serve-sim turns each browser wheel event into a touch drag on the digitizer (see
+serve-sim turns browser wheel input into a touch drag on the digitizer (see
 [Resolution: touch-drag scroll (shipped)](#resolution-touch-drag-scroll-shipped)).
 
 ## The two input planes
@@ -252,11 +252,12 @@ iOS 27.0, and only scroll failed.
 
 ## Validation log
 
-> This log is a historical record. Some code that it describes as present is not
-> in this repository now: the synthetic `IndigoHIDMessageForScrollEvent` scroll in
-> `HIDInjector.swift`, and the `--capture-scroll` diagnostic. The
-> [Resolution](#resolution-touch-drag-scroll-shipped) at the end describes what
-> ships.
+> The subsections before the [Resolution](#resolution-touch-drag-scroll-shipped)
+> are a historical record. Some code that they describe as present is not in this
+> repository now: the synthetic `IndigoHIDMessageForScrollEvent` scroll in
+> `HIDInjector.swift`, and the `--capture-scroll` diagnostic. The Resolution,
+> [Paced wheel delivery](#paced-wheel-delivery), and
+> [Browser wheel coalescing](#browser-wheel-coalescing) describe what ships.
 
 Environment: iPhone 17 Pro, **iOS 27.0**, Xcode 26.6 (17F109). Server:
 `node dist/serve-sim.js --port 3399` (local build). Driven via agent-browser +
@@ -379,8 +380,7 @@ anchor (not center) so long scrolls keep hit-testing the same view.
 
 The `--capture-scroll <udid> [seconds]` diagnostic is not in this repository: no
 code in its history defines it [observed: `git log -S capture-scroll` and
-`git log -S CaptureScroll` find only the commits that added and moved this
-document].
+`git log -S CaptureScroll` find only commits that edit this document].
 
 ### Paced wheel delivery
 
@@ -409,6 +409,14 @@ selections from those gestures before the guard, and none afterwards [observed:
 PR #250 local near-edge UIKit journals, 2026-10-05]. It does not establish
 hosted functional acceptance; full scrolling and Home-navigation acceptance
 remain separate gates.
+
+Measured on 2026-10-14 at `8edb2dea`, on an iPhone 17 / iOS 26.5 simulator:
+10 wheel messages sent 16 ms apart on one socket started within 179 ms, and 60
+started within 1.15 s, a median of 19 ms apart, so the input queue keeps up with
+the wheel [observed: start times of the `scroll` entries in `/api/event-log`].
+Before #250, at `5b273a8f`, the same 60 messages took 7.75 s, about 130 ms each,
+because each one waited for its own idle release. The resulting scroll in an
+app was not observed, because touch input did not reach apps on the test machine.
 
 ### Browser wheel coalescing
 

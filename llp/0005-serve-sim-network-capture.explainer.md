@@ -5,8 +5,8 @@
 **Systems:** ServeSim
 **Author:** Gabe Debes
 **Date:** 2026-09-29
-**Revised:** 2026-10-14 (checked against the code at 8edb2dea; running apps that carry the capability loader, what stopping capture removes, the CA copy in the proxy folder, the refusal message, the Hub's capture rule, `--events` limits) · 2026-10-06 (the Network panel chooses the capture fields, also during a capture); 2026-10-06 (Gabe Debes: explicit upstream routing, credential transport, shared runtime policy, and self-proxy retries)
-**Related:** LLP 0003, LLP 0007
+**Revised:** 2026-10-14 (checked against the code at 8edb2dea; running apps that carry the capability loader and who inserts it, what stopping capture removes, boots with `SERVE_SIM_ADDITIONAL_DYLIBS`, the CA copy in the proxy folder, the refusal message, the Hub's capture rule, `--events` limits) · 2026-10-06 (the Network panel chooses the capture fields, also during a capture); 2026-10-06 (Gabe Debes: explicit upstream routing, credential transport, shared runtime policy, and self-proxy retries)
+**Related:** LLP 0003, LLP 0007, LLP 0010, LLP 0011
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
 
@@ -26,24 +26,33 @@ the capture library to `DYLD_INSERT_LIBRARIES` in the simulator's launchd and to
 loader's config ([LLP 0007](0007-serve-sim-capability-loader.explainer.md#startup-capabilities)).
 Supported `NSURLSession` configurations that third-party apps create after that use the proxy. Apps
 launched later load the library at launch. An app that is already running loads it too if it was
-launched with the capability loader inserted, which standalone serve-sim does when it starts; the
-configurations that app made before then stay direct. Apple system apps are excluded, and
-`URLSession.shared` bypasses capture.
+launched with the capability loader inserted; the configurations that app made before then stay
+direct. A foreground `serve-sim` session inserts the loader when it starts, and a host that embeds the
+middleware inserts it when it sets up the clipboard reader for a device
+([LLP 0010](0010-serve-sim-clipboard.explainer.md#set-up-at-session-start-re-checked-every-30-s))
+[observed: `armCapabilityLoader` in `src/index.ts`; `createClipboardSession` in
+`src/clipboard-session.ts`]. Apple system apps are excluded, and `URLSession.shared` bypasses capture.
 
 The host's system proxy and keychain are unchanged. Stopping capture removes the capture library from
-the launchd insert and the loader's config, then stops the proxy; the capability loader stays inserted
-until no serve-sim session needs it. A running app's new sessions then connect directly; sessions it created while capture
-was on keep the stopped proxy and fail until the app is relaunched. Rebooting the simulator also clears
-the launchd injection.
+the launchd insert and the loader's config, then stops the proxy. A running app's new sessions then
+connect directly; sessions it created while capture was on keep the stopped proxy and fail until the
+app is relaunched. The capability loader stays inserted until no serve-sim session needs it
+[observed: `configureCapability`, `publishLaunchState`, and `releaseSession` in
+`src/launch-manager.ts`]. Rebooting the simulator also clears the launchd injection. When serve-sim
+boots a device with `SERVE_SIM_ADDITIONAL_DYLIBS` set, the boot environment also carries the loader
+and the capture library; the library does nothing until the loader's config lists capture
+([LLP 0011](0011-serve-sim-session-startup.explainer.md#additional-boot-dylibs)).
 
 serve-sim keeps one capture CA per user, in `~/Library/Application Support/serve-sim/capture-ca/`
 (folder mode `0700`, files `0600`; `SERVE_SIM_CAPTURE_CA_DIR` overrides it), and every capture session
 uses it, so the simulator trusts one serve-sim root however often capture restarts. The imported CA certificate remains in the simulator keychain after capture stops or
 the device reboots; teardown does not remove it. To make a new CA, delete `capture-ca/`; the next
 capture start creates one and trusts it, and erasing the simulator removes the old root. Each capture
-session copies the CA, including its private key, into a private temporary mitmproxy folder
-(`$TMPDIR/serve-sim-capture-*`), which is removed when the proxy stops or the process exits; a later
-capture start removes folders that a crashed run left.
+session also puts the CA, including its private key, in a private temporary mitmproxy folder
+(`$TMPDIR/serve-sim-capture-*`): a copy of the kept CA, or on the first start the new CA that is then
+kept. The folder is removed when the proxy stops or the process exits; a later capture start removes
+folders that a crashed run left [observed: `seedCaInto`, `keepCaFrom`, and `sweepStaleConfdirs` in
+`src/capture/mitm-engine.ts`].
 
 ### Upstream proxy
 
@@ -206,7 +215,7 @@ are matched by id and start time, since ids restart at `r1` in each session; a b
 start time too, and the server does not return a newer session's body for it. An existing HAR is checked
 for `log.entries` by streaming it without keeping its values. `--events` cannot name the HAR or the
 recording's other files, and without `--force` it must name an event log, an empty file, or a new
-path. Each
+path [observed: `followCaptureHar` and `isEventLogOrEmpty` in `src/capture/har-follow.ts`]. Each
 recording also claims its event log, so a second live recording refuses the same `--events`. The
 files are named after the HAR, so several recordings can share a folder: for `morning.har`, the event
 log is `morning.network-capture.json` and the entry log is `morning.entries.ndjson`. An existing
@@ -249,14 +258,17 @@ apart. It then counts every captured app on the device and is labeled "all apps"
 
 Use `--require-token` when exposing the standalone server beyond loopback. Without it, the preview is
 public and includes the token used by capture and control routes. So on a non-loopback `--host` without
-`--require-token`, serve-sim refuses network capture: it exits for `--network-capture`, and the
-preview's capture controls refuse it with an error that capture needs a token-gated preview. The
-middleware applies the same rule for every host that embeds it: without `requirePreviewToken`, capture
-is refused unless the host passes `loopbackOnly` because it listens on loopback only. The standalone
-`expo-device-hub` CLI passes `loopbackOnly` from its `--host` and `requirePreviewToken` under its
-`--require-token`, so without `--require-token` it refuses capture on a non-loopback host. The Hub
-plugin inside `expo start` passes neither, so it refuses capture. Embedded hosts that enable `requirePreviewToken` must
-protect access to their preview page.
+`--require-token`, serve-sim refuses network capture: it exits for `--network-capture` or
+`--enable networkCapture`, and the preview's capture controls refuse it with an error that capture
+needs a token-gated preview. That is the middleware's message, which replaces the CLI's when the
+preview mounts the middleware. The middleware applies the same rule for every host that embeds it:
+without `requirePreviewToken`, capture is refused unless the host passes `loopbackOnly` because it
+listens on loopback only. The standalone `expo-device-hub` CLI passes `loopbackOnly` from its `--host`
+and `requirePreviewToken` under its `--require-token`, so without `--require-token` it refuses capture
+on a non-loopback host. The Hub plugin inside `expo start` passes neither, so it refuses capture
+[observed: `publicCaptureRefusal` and `serve` in `src/index.ts`; `simMiddleware` in
+`src/middleware.ts`; `packages/expo-device-hub/src/server/serve-sim.ts` and `serve-sim-options.ts`].
+Embedded hosts that enable `requirePreviewToken` must protect access to their preview page.
 
 Capture does not upload artifacts automatically. A hosted deployment's collection of temporary files,
 downloads, or process logs has its own access and retention rules.

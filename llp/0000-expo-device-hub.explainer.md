@@ -6,7 +6,7 @@
 **Role:** Root
 **Author:** Claude Code (Claude Opus 5.5), directed by Krystof Woldrich
 **Date:** 2026-10-02
-**Revised:** 2026-10-06 (constraint 6: corrected where the scrcpy version is pinned) · 2026-10-03 (reviewed and made Active by Krystof Woldrich)
+**Revised:** 2026-10-14 (constraint 6: corrected where the scrcpy version is pinned) · 2026-10-03 (reviewed and made Active by Krystof Woldrich)
 
 ## Summary
 
