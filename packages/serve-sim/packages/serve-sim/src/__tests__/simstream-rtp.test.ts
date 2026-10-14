@@ -63,13 +63,23 @@ describe("simstream RTP bridge isolation", () => {
     for (const cleanup of cleanups.splice(0)) cleanup();
   });
 
-  /** A signaling server that bridges every connection, as the relay does; the engine port is unused. */
-  async function startRelay() {
+  async function listen() {
     const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
     await new Promise<void>((resolve) => server.once("listening", () => resolve()));
-    server.on("connection", (signal) => bridgeSimstreamRtp(signal, 1, []));
     cleanups.push(() => server.close());
-    return `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    return { server, port: (server.address() as AddressInfo).port };
+  }
+
+  /**
+   * A signaling server that bridges every connection, as the relay does. The engine accepts the
+   * bridge and sends nothing, so a refused engine connection can't close a bridge first.
+   */
+  async function startRelay() {
+    const engine = await listen();
+    engine.server.on("connection", (socket) => cleanups.push(() => socket.terminate()));
+    const relay = await listen();
+    relay.server.on("connection", (signal) => bridgeSimstreamRtp(signal, engine.port, []));
+    return `ws://127.0.0.1:${relay.port}`;
   }
 
   /** A viewer's signaling socket that has received the bridge's offer. */
