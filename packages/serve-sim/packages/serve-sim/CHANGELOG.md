@@ -1,5 +1,22 @@
 # @expo/serve-sim
 
+## 0.9.0
+
+### Minor Changes
+
+- 9d50a4d: Add token-protected simulator pasteboard read and write APIs.
+- fc0a29e: Copy selected simulator app text to the browser clipboard from the preview toolbar.
+- 69dac3b: Let embedded previews ask the embedding page for clipboard-read permission when a browser clipboard read fails.
+- 63f3ac2: Paste browser clipboard text into simulator apps from the preview keyboard or toolbar.
+- 89a2f39: Read simulator app clipboard text when simctl cannot access the pasteboard.
+
+### Patch Changes
+
+- e346301: Add `--disable-share` to hide the preview's Share button while keeping the other controls available.
+- c65c8b8: Keep iOS session recording in the same MP4 across network-capture reboots, resuming with fresh frames and a keyframe after boot completes. Preserve elapsed timestamps and record reboot interruptions in the manifest.
+- b819c39: Report in-process recording shutdown deadline failures without interrupting pending MP4 finalization. Retain the process and device state until finalization completes, then clean up and exit with failure status.
+- 27df089: Keep recording through transient control and startup stalls. Preserve an uploadable partial recording after completed encoder-flush failure and allow a fresh recording attempt once that encoder has been invalidated.
+
 ## 0.8.0
 
 ### Minor Changes
