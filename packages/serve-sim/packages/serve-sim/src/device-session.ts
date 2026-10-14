@@ -24,12 +24,14 @@ import {
   axFrontmostAsync,
   axTypeKeyboardCharacterAsync,
   type MjpegFrame,
+  type NativeHingeState,
   type NativeScreenInfo,
   type NativeUnsubscribe,
 } from "./native";
 import { isSoftwareKeyboardVisible } from "./ax";
 import { debugKeyboard } from "./debug";
 import { isHingeAngle, type HingeAngleResult } from "./hinge-angle";
+import { readSavedHingeState, writeSavedHingeState } from "./hinge-saved-state";
 import { validatePanelRoute } from "./panel-route";
 import { isHingeControlCommand, hingeControlState, hingePoseOrientation, isTableModeAvailable, type HingeControlCommand, type HingePose, type HingePhysicalOrientation } from "./hinge-control";
 import { getUiOption, refreshDeviceOptionState, setUiOption, setUiOptionIfRevision } from "./ui-settings";
@@ -247,6 +249,7 @@ export class DeviceSession {
   private width = 0;
   private height = 0;
   private orientation = "portrait";
+  private requestedOrientation: string | undefined;
   private supportsHingeAngle?: boolean;
   private supportsPhysicalOrientation?: boolean;
   private hingeAngle?: number;
@@ -254,6 +257,8 @@ export class DeviceSession {
   private tableMode?: boolean;
   private hingePhysicalOrientation?: HingePhysicalOrientation;
   private hingeControlUpdate: Promise<void> = Promise.resolve();
+  private hingeControlled = false;
+  private hingeRotated = false;
   private nativeScreen?: NativeScreenInfo;
   private screenRefresh?: Promise<boolean>;
   private screenRefreshRequested = false;
@@ -294,6 +299,7 @@ export class DeviceSession {
   private readonly cancelledBeforeStart = new Map<string, number>();
   private recordingFailure?: Error;
   private inputQueueDraining = false;
+  private scrollOwner?: HidSocket;
   private readonly activeTouches = new WeakMap<HidSocket, () => Promise<void>>();
   private readonly activeMultiTouches = new WeakMap<HidSocket, () => Promise<void>>();
   private readonly activeHidKeyUsages = new WeakMap<HidSocket, Set<number>>();
@@ -335,8 +341,12 @@ export class DeviceSession {
         this.hid.supportsPhysicalOrientation(),
       ]).then(([supportsHingeAngle, supportsPhysicalOrientation]) => {
         if (this.phase !== "running") return;
-        this.supportsHingeAngle = supportsHingeAngle;
         this.supportsPhysicalOrientation = supportsPhysicalOrientation;
+        if (supportsHingeAngle) {
+          this.hydrateHingeState();
+          return;
+        }
+        this.supportsHingeAngle = false;
         this.broadcastConfig();
       });
     });
@@ -1163,6 +1173,11 @@ export class DeviceSession {
         if (m) {
           const operation = this.queueInputOperation(ws, async () => {
             this.recordTouchEvent(m);
+            if (m.type === "begin" && this.scrollOwner) {
+              await this.hid.cancelScroll();
+              this.scrollOwner = undefined;
+              if (this.phase !== "running" || this.detachedHidSockets.has(ws) || this.overloadedHidSockets.has(ws)) return;
+            }
             await this.hid.touch(m.type as "begin" | "move" | "end", m.x, m.y, W, H, m.edge ?? 0);
             if (m.type === "end") this.activeTouches.delete(ws);
             else this.activeTouches.set(ws, () => this.hid.touch("end", m.x, m.y, W, H, m.edge ?? 0));
@@ -1187,6 +1202,11 @@ export class DeviceSession {
         if (m) {
           const operation = this.queueInputOperation(ws, async () => {
             this.recordHidEvent(tag, m);
+            if (m.type === "begin" && this.scrollOwner) {
+              await this.hid.cancelScroll();
+              this.scrollOwner = undefined;
+              if (this.phase !== "running" || this.detachedHidSockets.has(ws) || this.overloadedHidSockets.has(ws)) return;
+            }
             await this.hid.multiTouch(m.type as "begin" | "move" | "end", m.x1, m.y1, m.x2, m.y2, W, H);
             if (m.type === "end") this.activeMultiTouches.delete(ws);
             else this.activeMultiTouches.set(ws, () => this.hid.multiTouch("end", m.x1, m.y1, m.x2, m.y2, W, H));
@@ -1231,19 +1251,29 @@ export class DeviceSession {
         const operation = this.hingeControlUpdate.then(async () => {
           const value = ORIENTATION_BY_NAME[m.orientation];
           if (this.phase !== "running" || value == null || !await this.hid.orientation(value)) return;
+          this.hingeRotated = true;
+          // Only startup hydration advertises hinge support, after it reads the angle.
+          const supportsHingeAngle = this.supportsHingeAngle ?? await this.hid.supportsHingeAngle();
+          if (this.phase !== "running") return;
           this.recordHidEvent(tag, m);
-          if (this.supportsHingeAngle) {
+          if (supportsHingeAngle) {
             // Rotation is panel-relative; only a named pose establishes the
             // physical orientation needed to determine Table Mode eligibility.
             this.hingePose = null;
             this.hingePhysicalOrientation = undefined;
             this.tableMode = false;
+            this.saveHingeState();
             // Apps may lock their interface. Keep native readback authoritative.
             await this.refreshScreenSizeFromNative();
             this.broadcastConfig();
-          } else if (m.orientation !== this.orientation) {
-            this.orientation = m.orientation;
-            this.broadcastConfig();
+          } else {
+            // @ref LLP 0003#rotation-readback — regular-device framing survives portrait-only apps
+            this.requestedOrientation = m.orientation;
+            writeSavedHingeState(this.udid, {});
+            if (m.orientation !== this.orientation) {
+              this.orientation = m.orientation;
+              this.broadcastConfig();
+            }
           }
         });
         this.hingeControlUpdate = operation.catch(() => {});
@@ -1276,7 +1306,17 @@ export class DeviceSession {
         if (m) {
           const operation = this.queueInputOperation(ws, async () => {
             this.recordHidEvent(tag, m);
-            await this.hid.scroll(m.dx * W, m.dy * H, W, H, m.x, m.y);
+            const dx = m.dx * W;
+            const dy = m.dy * H;
+            if (Number.isFinite(dx) && Number.isFinite(dy) && (dx !== 0 || dy !== 0) && W > 0 && H > 0) {
+              if (this.scrollOwner && this.scrollOwner !== ws) {
+                await this.hid.cancelScroll();
+                this.scrollOwner = undefined;
+              }
+              if (this.phase !== "running" || this.detachedHidSockets.has(ws) || this.overloadedHidSockets.has(ws)) return;
+              this.scrollOwner = ws;
+            }
+            await this.hid.scroll(dx, dy, W, H, m.x, m.y);
           });
           if (operation) await operation;
         }
@@ -1373,10 +1413,45 @@ export class DeviceSession {
     }
   }
 
+  /** Seed the hinge from native before advertising it, so clients never see support without state. */
+  private hydrateHingeState(): void {
+    const operation = this.hingeControlUpdate.then(async () => {
+      if (!this.hingeControlled || this.hingeAngle === undefined) {
+        const state = await this.hid.hingeState();
+        if (this.phase !== "running") return;
+        if (this.hingeControlled) {
+          this.hingeAngle = state.hingeAngle;
+          this.saveHingeState();
+        } else {
+          this.applyNativeHingeState(state);
+        }
+      }
+      this.supportsHingeAngle = true;
+      this.broadcastConfig();
+    });
+    this.hingeControlUpdate = operation.catch(() => {});
+  }
+
+  private applyNativeHingeState(state: NativeHingeState): void {
+    const saved = this.hingeRotated ? null : readSavedHingeState(this.udid, state.hingeAngle);
+    this.hingeAngle = state.hingeAngle;
+    this.tableMode = this.hingeRotated ? false : state.tableMode ?? saved?.tableMode;
+    this.hingePhysicalOrientation = this.hingeRotated ? undefined : state.physicalOrientation ?? saved?.physicalOrientation;
+    this.hingePose = this.hingeRotated ? null : saved?.hingePose ?? null;
+    if (this.hingeRotated) this.saveHingeState();
+  }
+
   /** Keep pose sequences ordered across sliders, presets, and legacy CLI clients. */
   private queueHingeControl(command: HingeControlCommand): Promise<boolean> {
     const operation = this.hingeControlUpdate.then(async () => {
       if (this.phase !== "running") return false;
+      if (!this.hingeControlled && this.hingeAngle === undefined) {
+        // Seed before the first save so an early command keeps the saved
+        // orientation, even when the command fails.
+        const state = await this.hid.hingeState();
+        if (this.phase !== "running") return false;
+        this.applyNativeHingeState(state);
+      }
       if (command.control === "table" && command.value && !isTableModeAvailable(this.hingeAngle, this.hingePhysicalOrientation)) return false;
       if (command.control === "physical" && this.supportsPhysicalOrientation === false) return false;
       if (command.control === "physical" && command.value === "facedown") {
@@ -1389,6 +1464,7 @@ export class DeviceSession {
         }
         if (!(this.hingeAngle !== undefined && this.hingeAngle > 0 && this.hingeAngle < 180)) return false;
       }
+      this.hingeControlled = true;
       const ok = command.control === "pose" ? await this.hid.setHingePose(command.value)
         : command.control === "physical" ? await this.hid.setPhysicalOrientation(command.value)
         : command.control === "table" ? await this.hid.setTableMode(command.value)
@@ -1401,6 +1477,7 @@ export class DeviceSession {
         if (state.tableMode !== undefined) this.tableMode = state.tableMode;
         if (command.control === "physical") this.hingePhysicalOrientation = command.value;
         if (command.control === "pose") this.hingePhysicalOrientation = hingePoseOrientation(command.value);
+        this.saveHingeState();
         this.broadcastConfig();
       } else {
         // A failed sequence can still move the hinge or change the active
@@ -1411,6 +1488,12 @@ export class DeviceSession {
         this.hingeAngle = recovered.hingeAngle ?? this.hingeAngle;
         this.tableMode = recovered.tableMode;
         this.hingePhysicalOrientation = recovered.physicalOrientation ?? this.hingePhysicalOrientation;
+        writeSavedHingeState(this.udid, {
+          hingeAngle: recovered.hingeAngle,
+          hingePose: null,
+          physicalOrientation: this.hingePhysicalOrientation,
+          tableMode: this.tableMode,
+        });
         try { await this.refreshScreenSizeFromNative(); }
         catch { /* Preserve the last readable screen through a transient failure. */ }
         if (this.phase !== "running") return false;
@@ -1420,6 +1503,15 @@ export class DeviceSession {
     });
     this.hingeControlUpdate = operation.then(() => {}, () => {});
     return operation;
+  }
+
+  private saveHingeState(): void {
+    writeSavedHingeState(this.udid, {
+      hingeAngle: this.hingeAngle,
+      hingePose: this.hingePose,
+      physicalOrientation: this.hingePhysicalOrientation,
+      tableMode: this.tableMode,
+    });
   }
 
   private queueSoftwareKeyboardSync(visible: boolean): void {
@@ -1494,6 +1586,10 @@ export class DeviceSession {
     const queue = this.inputOperationQueues.get(ws) ?? [];
     queue.push({
       run: async () => {
+        if (this.scrollOwner === ws) {
+          await this.hid.cancelScroll();
+          this.scrollOwner = undefined;
+        }
         for (const touches of [this.activeTouches, this.activeMultiTouches]) {
           const release = touches.get(ws);
           touches.delete(ws);
@@ -1832,8 +1928,9 @@ export class DeviceSession {
       this.height = screen.height;
       changed = true;
     }
-    if (screen.orientation !== undefined && screen.orientation !== this.orientation) {
-      this.orientation = screen.orientation;
+    const orientation = this.supportsHingeAngle ? screen.orientation : this.requestedOrientation ?? screen.orientation;
+    if (orientation !== undefined && orientation !== this.orientation) {
+      this.orientation = orientation;
       changed = true;
     }
     this.nativeScreen = screen;

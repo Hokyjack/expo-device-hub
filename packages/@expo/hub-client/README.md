@@ -89,6 +89,29 @@ Status and control changes update this component. FPS, metrics, and log changes 
 Status can be `'idle'`, `'connecting'`, `'streaming'` or `'error'`. Android also reports
 `'reconnecting'` while restoring a stream. Read `error` for the last failure message.
 
+### Read device settings
+
+`deviceSettingsStatus` reports settings availability on both platforms, independently
+of video and app activity. It is `'idle'` while disabled, `'loading'` during discovery
+and the first read, then `'ready'` or `'error'`. Settings reads time out after five
+seconds; `'ready'` can include empty settings.
+
+```tsx
+import { useDeviceClient } from '@expo/hub-client';
+
+function DeviceSettingsSummary() {
+  const { deviceSettingsStatus, deviceSettings } = useDeviceClient();
+  if (deviceSettingsStatus === 'idle') return null;
+  if (deviceSettingsStatus === 'loading') return <span>Loading settings…</span>;
+  if (deviceSettingsStatus === 'error') return <span>Settings unavailable</span>;
+
+  return <span>Appearance: {deviceSettings?.appearance ?? 'Unavailable'}</span>;
+}
+```
+
+Failed refreshes report `'error'` and retain cached values. Use `'ready'` to enable
+controls; recovery restores it without showing the initial loading state again.
+
 ### Show the screen
 
 Use `useDeviceScreenClient` with `DeviceScreen`. It follows screen and input changes
