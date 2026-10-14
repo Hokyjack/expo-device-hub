@@ -10,13 +10,82 @@ const CLI = join(import.meta.dir, "../../dist/serve-sim.js");
 
 requireE2E("launch flags", existsSync(CLI));
 
-async function runCli(args: string[]): Promise<{ code: number; stderr: string }> {
+async function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn(["node", CLI, ...args], { stdout: "pipe", stderr: "pipe" });
-  const stderr = await new Response(proc.stderr).text();
-  return { code: await proc.exited, stderr };
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  return { code: await proc.exited, stdout, stderr };
 }
 
 describe.skipIf(!existsSync(CLI))("launch flags", () => {
+  test("validates the installation path without a launch identifier", async () => {
+    const { code, stderr } = await runCli(["--install-app-path", CLI]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("--install-app-path needs an existing .app directory");
+  });
+
+  test("rejects an installation path that is not an app directory", async () => {
+    const { code, stderr } = await runCli([
+      "--install-app-path", CLI, "--launch-app-identifier", "dev.example.app",
+    ]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("--install-app-path needs an existing .app directory");
+  });
+
+  test.each([
+    [["--install-app-path", CLI], "--install-app-path needs an existing .app directory"],
+    [["--install-app-path", CLI, "--launch-app-identifier", "dev.example.app"], "--install-app-path needs an existing .app directory"],
+  ])("quiet installation validation reports JSON for %j", async (args, diagnostic) => {
+    const { code, stdout } = await runCli(["--quiet", ...args]);
+    expect(code).toBe(1);
+    expect(JSON.parse(stdout)).toEqual({ error: expect.stringContaining(diagnostic) });
+  });
+
+  test("rejects an invalid capture proxy before touching a simulator, without exposing credentials", async () => {
+    const { code, stderr } = await runCli(["--network-capture-proxy", "socks://user:cli-secret@proxy:8899"]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("HTTP proxy URL");
+    expect(stderr).not.toContain("cli-secret");
+  });
+
+  test("accepts direct and authenticated capture proxy launch arguments", async () => {
+    for (const proxy of ["none", "http://user:cli-secret@proxy:8899"]) {
+      const { code, stderr } = await runCli(["--network-capture-proxy", proxy, "--transport", "invalid"]);
+      expect(code).toBe(1);
+      expect(stderr).toContain("--transport must be one of");
+      expect(stderr).not.toContain("HTTP proxy URL");
+      expect(stderr).not.toContain("cli-secret");
+    }
+  });
+
+  test.each(["--detach", "--no-preview"])("rejects configured upstreams with %s without exposing credentials", async (mode) => {
+    for (const proxy of ["http://proxy:8899", "http://user:cli-secret@proxy:8899"]) {
+      const { code, stderr } = await runCli(["--network-capture-proxy", proxy, mode]);
+      expect(code).toBe(1);
+      expect(stderr).toContain("--network-capture-proxy needs the preview server");
+      expect(stderr).not.toContain("cli-secret");
+    }
+  });
+
+  test.each(["--detach", "--no-preview"])("quiet upstream rejection reports JSON with %s", async (mode) => {
+    const { code, stdout, stderr } = await runCli(["--quiet", "--network-capture-proxy", "http://user:cli-secret@proxy:8899", mode]);
+    expect(code).toBe(1);
+    expect(JSON.parse(stdout)).toEqual({ error: expect.stringContaining("--network-capture-proxy needs the preview server") });
+    expect(stdout + stderr).not.toContain("cli-secret");
+  });
+
+  test.each(["--detach", "--no-preview"])("allows omitted or explicitly direct upstream with %s", async (mode) => {
+    for (const proxyArgs of [[], ["--network-capture-proxy", "none"]]) {
+      // This later validation stops before device selection and proves the upstream check allowed it.
+      const { code, stderr } = await runCli([...proxyArgs, mode, "--require-token"]);
+      expect(code).toBe(1);
+      expect(stderr).toContain("--require-token needs the preview server");
+      expect(stderr).not.toContain("--network-capture-proxy needs");
+    }
+  });
+
   test("rejects an empty app identifier", async () => {
     const { code, stderr } = await runCli(["--launch-app-identifier", ""]);
     expect(code).toBe(1);

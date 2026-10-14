@@ -54,6 +54,10 @@ Planned:
 
 - Bun 1.3.13+
 - `adb` on PATH from Android platform-tools
+- Android SDK Build-Tools for app icons (`aapt2`). serve-emu looks for the SDK in
+  `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then the SDK that holds `adb` or `emulator`
+  on PATH, then Android Studio's default folder (`~/Library/Android/sdk` on macOS,
+  `~/Android/Sdk` or `~/Android/sdk` on Linux, `%LOCALAPPDATA%\Android\Sdk` on Windows)
 - A booted device/emulator from `adb devices`, or an AVD name passed with `--avd`
 - A modern browser with H.264 WebRTC support or WebCodecs; MSE is used when WebCodecs is unavailable
 - `ffmpeg` with `libx264` when using `--stream-mode grpc-screenshot` (the default software encoder)
@@ -140,7 +144,7 @@ serve-emu --running-avds
 | `--restart-avd` | false | Stop a running matching AVD before launching it |
 | `--avd-list` | false | List available Android Virtual Device names |
 | `--running-avds` | false | List currently running emulator serials and AVD names |
-| `--emulator` | auto | Android Emulator binary path; defaults to PATH or Android SDK env vars |
+| `--emulator` | auto | Android Emulator binary path; defaults to PATH, then the Android SDK (see [Requirements](#requirements)) |
 | `--emulator-port` | auto | Android Emulator console port for `--avd`; must be an even port from 5554 through 5682 |
 | `--camera` | false | Feed the emulator cameras from PNG files serve-emu owns, so the picture can change while the emulator runs. Requires `--avd`; see [Camera Image](#camera-image) |
 | `--camera-image` | none | Implies `--camera` and preloads this PNG as the back camera |

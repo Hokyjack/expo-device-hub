@@ -1,5 +1,47 @@
 # @expo/hub-client
 
+## 1.6.0
+
+### Minor Changes
+
+- 190a904: Expose activity readiness independently of video.
+
+### Patch Changes
+
+- cf4c0b2: Advance the iOS Rotate button through requested orientations while screen readback is delayed or an app declines a pose.
+- cf4c0b2: Wait for helper admission before sending iOS input when the helper advertises `inputAdmission`. Legacy helpers continue accepting input when the socket opens.
+- 66ca088: Keep settings available when other streams restart and prevent duplicate writes.
+
+## 1.5.0
+
+### Minor Changes
+
+- 16edd92: Add `DeviceClient.deviceSettingsStatus` to distinguish loading, ready, and failed settings reads on iOS and Android.
+
+### Patch Changes
+
+- 16a6fed: Read and update Android appearance asynchronously, and keep device controls in sync with appearance changes made on the device.
+- c731773: `deviceSettingsStatus` now reports iOS discovery, connection loss, and recovery, so consumers no longer need the video status. Failed refreshes report `'error'` and keep cached settings. The Hub dashboard disables unavailable settings.
+- d3db352: Keep device settings in sync every five seconds while the browser tab is visible.
+- dd19174: Combine browser wheel deltas per display frame after sending the first event immediately, and cancel buffered scrolling when touch input starts, the page becomes hidden, or the preview is cleaned up. Requires a simulator host that buffers excess wheel distance across screen-edge reanchors.
+
+## 1.4.0
+
+### Minor Changes
+
+- 320a7d5: Add `DeviceClient.inputError`. On iOS it reports when serve-sim refuses the
+  input socket (too many clients or a full input queue) or reports
+  `inputUnavailable`, and clears when input works again. On Android it reports
+  a down WebRTC input socket.
+
+### Patch Changes
+
+- d7b3d1b: Report only the iOS stream modes that serve-sim advertises in `/api`: an HTTP server no longer offers WebRTC, and a WebRTC server no longer offers MJPEG or H.264.
+
+  Reset capabilities when changing servers or devices, select a supported transport for unavailable viewer choices, and keep WebRTC failures from falling back to locked HTTP streams. Only promise an insecure-HTTP MJPEG fallback when the backend supports it.
+
+  Receive subsequent iOS connection config over the middleware's exec WebSocket. Reconnect input independently, preserving video and viewer codec choices when the config is unchanged; background discovery recovers changed session credentials when WebSockets are unavailable. Align the shared stream controls' HTTP fallback with the adapter's H.264 preference.
+
 ## 1.3.1
 
 ### Patch Changes

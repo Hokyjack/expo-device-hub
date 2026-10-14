@@ -22,6 +22,7 @@ struct NativeRecordingResult: Sendable {
     let maxInFlight: Int
     let meanEncodeMs: Double
     let maxEncodeMs: Double
+    let finalizeMs: Double
 }
 
 private final class RecordingFinishLatch: @unchecked Sendable {
@@ -70,6 +71,7 @@ final class NativeVideoRecorder: @unchecked Sendable {
     private var awaitingKeyframe = true
     private var forceIDR = true
     private var closing = false
+    private var writerFinalizationStarted = false
     private var failure: Error?
     private var encodedFrames: UInt64 = 0
     private var writtenFrames: UInt64 = 0
@@ -135,7 +137,9 @@ final class NativeVideoRecorder: @unchecked Sendable {
                 (kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse! as Any),
                 (kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: max(1, bitrate)) as Any),
                 (kVTCompressionPropertyKey_ExpectedFrameRate, NSNumber(value: 60) as Any),
-                (kVTCompressionPropertyKey_MaxKeyFrameInterval, NSNumber(value: 120) as Any),
+                // @ref LLP 0001#keyframe-contract — limit keyframe spacing by submitted frames and media time.
+                (kVTCompressionPropertyKey_MaxKeyFrameInterval, NSNumber(value: 60) as Any),
+                (kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, NSNumber(value: 1.0) as Any),
             ] {
                 let result = VTSessionSetProperty(created, key: key, value: value as CFTypeRef)
                 guard result == noErr else {
@@ -349,6 +353,8 @@ final class NativeVideoRecorder: @unchecked Sendable {
         }
         let url = outputDirectory.appendingPathComponent("recording.mp4")
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        // @ref LLP 0001#saved-mp4-layout-contract — put the saved-file index before media for progressive loading.
+        writer.shouldOptimizeForNetworkUse = true
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: nil,
                                        sourceFormatHint: format)
         input.expectsMediaDataInRealTime = true
@@ -363,12 +369,20 @@ final class NativeVideoRecorder: @unchecked Sendable {
         self.input = input
     }
 
-    func finish() async throws -> NativeRecordingResult {
+    func finish(
+        encoderFlushTimeout: TimeInterval = 60,
+        completeFrames: @escaping @Sendable (VTCompressionSession) -> OSStatus = {
+            VTCompressionSessionCompleteFrames($0, untilPresentationTimeStamp: .invalid)
+        },
+        finishWriting: @escaping @Sendable (AVAssetWriter, @escaping @Sendable () -> Void) -> Void = {
+            $0.finishWriting(completionHandler: $1)
+        }
+    ) async throws -> NativeRecordingResult {
         try await withCheckedThrowingContinuation { continuation in
             let latch = RecordingFinishLatch(continuation)
-            queue.asyncAfter(deadline: .now() + 60) { [weak self] in
-                guard latch.pending else { return }
-                let error = Self.error(15, "Recording finalization timed out after 60 seconds")
+            queue.asyncAfter(deadline: .now() + encoderFlushTimeout) { [weak self] in
+                guard latch.pending, self?.writerFinalizationStarted != true else { return }
+                let error = Self.error(15, "Recording encoder flush timed out after \(encoderFlushTimeout) seconds")
                 self?.failure = error
                 self?.timer?.cancel()
                 self?.timer = nil
@@ -390,9 +404,7 @@ final class NativeVideoRecorder: @unchecked Sendable {
                 self.timer = nil
                 if let session = self.session {
                     DispatchQueue.global(qos: .userInitiated).async {
-                        let status = VTCompressionSessionCompleteFrames(
-                            session, untilPresentationTimeStamp: .invalid
-                        )
+                        let status = completeFrames(session)
                         self.queue.async {
                             guard latch.pending else { return }
                             if status != noErr {
@@ -400,17 +412,20 @@ final class NativeVideoRecorder: @unchecked Sendable {
                                     16, "Recording encoder flush failed (status \(status))"
                                 ))
                             }
-                            self.finishOnQueue(latch)
+                            self.finishOnQueue(latch, finishWriting: finishWriting)
                         }
                     }
                 } else {
-                    self.finishOnQueue(latch)
+                    self.finishOnQueue(latch, finishWriting: finishWriting)
                 }
             }
         }
     }
 
-    private func finishOnQueue(_ latch: RecordingFinishLatch) {
+    private func finishOnQueue(
+        _ latch: RecordingFinishLatch,
+        finishWriting: @escaping @Sendable (AVAssetWriter, @escaping @Sendable () -> Void) -> Void
+    ) {
         if let session {
             VTCompressionSessionInvalidate(session)
             self.session = nil
@@ -428,7 +443,11 @@ final class NativeVideoRecorder: @unchecked Sendable {
             return
         }
         input.markAsFinished()
-        writer.finishWriting {
+        // @ref LLP 0001#saved-mp4-layout-contract — rewriting the saved MP4 must outlive the encoder flush deadline.
+        writerFinalizationStarted = true
+        let finalizationStartNs = DispatchTime.now().uptimeNanoseconds
+        finishWriting(writer) {
+            let finalizeMs = Double(DispatchTime.now().uptimeNanoseconds - finalizationStartNs) / 1_000_000
             self.queue.async {
                 if let failure = self.failure {
                     guard writer.status == .completed else {
@@ -441,14 +460,15 @@ final class NativeVideoRecorder: @unchecked Sendable {
                     latch.resolve(.failure(NSError(domain: original.domain, code: original.code,
                                                    userInfo: details)))
                 } else {
-                    self.finishWriter(writer, firstFrameWallClock: firstFrameWallClock, latch: latch)
+                    self.finishWriter(writer, firstFrameWallClock: firstFrameWallClock,
+                                      finalizeMs: finalizeMs, latch: latch)
                 }
             }
         }
     }
 
     private func finishWriter(_ writer: AVAssetWriter, firstFrameWallClock: Date,
-                              latch: RecordingFinishLatch) {
+                              finalizeMs: Double, latch: RecordingFinishLatch) {
         guard latch.pending else { return }
         do {
             guard writer.status == .completed else {
@@ -478,7 +498,8 @@ final class NativeVideoRecorder: @unchecked Sendable {
                 encodeFailures: encodeFailures, maxInFlight: maxInFlight,
                 meanEncodeMs: encodeCompletions == 0 ? 0
                     : Double(encodeTimeSumNs) / Double(encodeCompletions) / 1_000_000,
-                maxEncodeMs: Double(encodeTimeMaxNs) / 1_000_000
+                maxEncodeMs: Double(encodeTimeMaxNs) / 1_000_000,
+                finalizeMs: finalizeMs
             )))
         } catch {
             latch.resolve(.failure(error))

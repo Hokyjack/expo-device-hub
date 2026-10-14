@@ -1,5 +1,36 @@
 # expo-device-hub
 
+## 0.16.0
+
+### Minor Changes
+
+- 5317c57: The CLI now records the metadata of each running Hub in `server-<port>.json` in `$TMPDIR/expo-device-hub` (or `EXPO_DEVICE_HUB_STATE_DIR`).
+
+### Patch Changes
+
+- 3e3c70a: Find the Android SDK in predefined search paths when `ANDROID_HOME` is not set.
+- cf4c0b2: Advance the iOS Rotate button through requested orientations while screen readback is delayed or an app declines a pose.
+- c49d95a: Add a `/healthz` endpoint that answers `200 {"status":"ok"}` without the session token.
+- cf4c0b2: Wait for helper admission before sending iOS input when the helper advertises `inputAdmission`. Legacy helpers continue accepting input when the socket opens.
+- 8450057: Keep regular iPhone preview rotation when returning to portrait-only apps such as Home.
+
+## 0.15.3
+
+### Patch Changes
+
+- 16a6fed: Read and update Android appearance asynchronously, and keep device controls in sync with appearance changes made on the device.
+- c731773: `deviceSettingsStatus` now reports iOS discovery, connection loss, and recovery, so consumers no longer need the video status. Failed refreshes report `'error'` and keep cached settings. The Hub dashboard disables unavailable settings.
+- dd19174: Combine browser wheel deltas per display frame after sending the first event immediately, and cancel buffered scrolling when touch input starts, the page becomes hidden, or the preview is cleaned up. Requires a simulator host that buffers excess wheel distance across screen-edge reanchors.
+
+## 0.15.2
+
+### Patch Changes
+
+- 4822dc0: Keep the Node server running when middleware rejects a POST and cancels its unread body. Return the rejection response and drain the remaining upload without closing the response socket.
+- b2f5247: Release held Android touches when a preview tab disconnects, without lifting another viewer's touches.
+- f78dec6: Internal change: session tokens must not be empty and can now contain only letters, digits, and `-._~`. Other tokens are refused, and the CLI tools throw an error.
+- 5f863e0: Run `avdmanager` and `sdkmanager` on Windows, where they ship as `.bat` wrappers.
+
 ## 0.15.1
 
 ### Patch Changes
