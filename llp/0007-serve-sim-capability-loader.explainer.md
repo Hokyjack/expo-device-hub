@@ -5,7 +5,7 @@
 **Systems:** ServeSim
 **Author:** Imported from expo/serve-sim in #79 (original authors are in that repo); later edits by Gabe Debes
 **Date:** 2026-09-23
-**Revised:** 2026-10-02 (moved into the LLP corpus from `packages/serve-sim/packages/serve-sim/Sources/ServeSimCapabilityLoader/DESIGN.md`; links and paths updated)
+**Revised:** 2026-10-06 (added startup installation to the detached-mode restrictions and linked the startup explainer)
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
 
@@ -144,7 +144,7 @@ something that reliably removes it:
   `SIGINT`/`SIGTERM`/`SIGHUP`. The signal handlers disarm directly, because
   spawning `simctl` from an exit handler does not always finish.
 - `--detach` never arms. The command exits once the helper is streaming, so no process
-  is left to disarm it. `--launch-app-identifier`, `--launch-arg`,
+  is left to disarm it. `--install-app-path`, `--launch-app-identifier`, `--launch-arg`,
   `--open-url`, `--enable` and `--disable` are rejected with `--detach`.
 - On startup, a capability loader left behind by an earlier session whose dylib no
   longer exists is cleaned up.
@@ -154,6 +154,9 @@ something that reliably removes it:
   (`null`) outlives the command that created it; a record owned by a session is
   released when that session exits, including its host helper. The insert is
   removed only when no live session or capability needs it.
+
+For the CLI's boot/install/launch ordering and readiness boundary, see
+[LLP 0011](0011-serve-sim-session-startup.explainer.md) (Draft).
 
 ## Not there yet
 
@@ -194,6 +197,12 @@ created before a late load remain unchanged, so those requests can be missed.
 The capability manager owns all insert-list updates. A separate insert ownership file
 retains startup paths until launchd cleanup succeeds, even when their capability owner
 has exited or their config has been removed. Unrelated inserted libraries are preserved.
+`SERVE_SIM_ADDITIONAL_DYLIBS` adds caller-owned paths to that insert list alongside
+the loader and startup capability images. Cleanup by a process with that variable set
+preserves its explicitly requested paths, even when an enabled capability also records
+one as a managed image. Caller paths are excluded from stale-loader detection
+[observed: `src/launch-manager.ts` `armInsert`, `withoutOurs`,
+`removeReleasedStartupSync`, `disarmStaleCapabilityLoader`].
 
 Capture's startup image resolves existing Objective-C runtime functions and enumerates
 session factory methods without sending Objective-C messages during initialization.

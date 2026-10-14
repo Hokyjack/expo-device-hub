@@ -2,10 +2,10 @@
 
 **Type:** Spec
 **Status:** Active
-**Systems:** ServeSim
+**Systems:** ServeSim, HubClient
 **Author:** Gabe Debes
 **Date:** 2026-09-23
-**Revised:** 2026-10-02 (moved into the LLP corpus from `packages/serve-sim/packages/serve-sim/docs/api.md`; links and paths updated)
+**Revised:** 2026-10-12 (rotation readback contract; added installed-app launch, control, data-file and upload actions)
 **Related:** LLP 0001, LLP 0002
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
@@ -206,5 +206,147 @@ WebSocket.
 the DevTools bridge come from `GET /devtools`, which returns a
 `webSocketDebuggerUrl` per target.
 
+### CLI input admission
+
+Helpers advertise `inputAdmission: true` in their state record and send the
+single-byte `0x83` frame after reserving an input slot. The CLI's short input
+commands wait for that frame before sending. A full pool closes with `1013`,
+which fails the command even if the refusal arrives after the transport opens.
+A connection that never admits input fails after ten seconds. Older helpers
+without the state flag retain their open-based behavior [observed:
+`src/socket/cli-input.ts`, `src/index.ts`, `src/state.ts`].
+
 The CDP bridge forwards frames verbatim in both directions. The token
 subprotocol is not forwarded upstream, so the credential stops at serve-sim.
+
+### Rotation readback
+
+The helper HID socket accepts a `0x07` frame carrying `{ orientation }`.
+Successful native delivery does not mean that the foreground app accepted the
+requested interface orientation. For regular devices, config `orientation`
+starts from native screen readback, then retains the last successfully delivered
+request as device framing. A portrait-only app such as Home therefore does not
+turn the frame back. Later native interface-orientation changes, including ones
+from Simulator.app, do not replace that framing; another helper rotation request
+does, or a new session seeds it again from native readback. This also works with
+older native APIs without orientation metadata. Native dimensions, screen routing
+and recording metadata still come from capture readback
+[observed: `src/device-session.ts` case `0x07` and `readScreenFromNative`, `Sources/SimNative/FrameCapture.swift`].
+
+Foldable devices retain native interface-orientation readback because their
+physical framing is controlled separately by the Duo view. That remains true
+when hinge capability discovery completes after an early rotation request
+[observed: `src/device-session.ts` `readScreenFromNative`, `src/client/client.tsx` `rotateDevice`].
+
+The standalone preview and HubClient advance Rotate from requested poses, so
+rapid clicks or an app-declined pose do not repeat the same request. They ignore
+mismatched orientation readback for up to 1,500 ms after the latest request;
+its acknowledgement releases that protection early. Only orientation changes
+update the cursor; HubClient also reconciles a repeated changed readback that it
+deferred during the grace period once protection expires. An unchanged,
+previously reconciled pose does not reset an app-declined request. HubClient
+resets the cursor when the helper or capture session changes. The displayed
+screen remains server-owned
+[observed: `src/client/simulator/rotation-cursor.ts`, `packages/@expo/hub-client/src/rotation-cursor.ts` and `useIosDevice.ts`].
+
+HubClient advances its cursor only after the browser socket's `send` returns.
+Queued Rotate clicks resolve their next pose at delivery, in queue order;
+expired or evicted clicks never advance it. Helpers advertising `inputAdmission`
+must send `0x83` or a valid `0x82` screen config before HubClient sends input.
+A screen config that establishes admission reconciles orientation before queued
+clicks flush, while an older initial config cannot overwrite newer sent poses
+during the grace period.
+Legacy helpers retain send-on-open compatibility. Browser submission does not
+prove native delivery or app acceptance
+[observed: `packages/@expo/hub-client/src/ws-send-queue.ts`, `rotation-cursor.ts` and `useIosDevice.ts`].
+
+### Raw HID close contract
+
+The raw HID adapter releases session capacity exactly once, stops its heartbeat,
+and discards buffered and subsequent input before ending the transport. It
+queues the close frame through `socket.end(...)`, allowing previously queued
+output and the close code/reason to flush instead of destroying TCP immediately
+[observed: `src/socket/server-input.ts`, `rawHidSocket`].
+
+If TCP has not closed, an unreferenced timer schedules destruction after
+1,000 ms; actual TCP close cancels that timer. This is bounded best-effort
+cleanup, not a guarantee that the peer receives the frame or that a busy event
+loop runs the timer at an exact deadline [observed: `rawHidSocket.shutdown`
+and its socket `close` listener]. The close-delivery tests cover immediate
+capacity release, idempotent close, discarded input, cleanup of an unresponsive
+peer, and receipt of the 1013 refusal code/reason over a real Node socket with
+concurrent input [observed: `src/__tests__/raw-hid-socket.test.ts`].
+
+### Launching an installed app
+
+An authenticated `/exec-ws` client can launch an installed app with
+`{id, action: "app.launch", params: {udid, bundleId, launchArgs?, openUrl?}}`.
+Use a Simulator UDID. The action restarts the app with the supplied arguments,
+preserves the session's active capabilities, then pre-approves and opens the
+optional deep link. Pre-approval is best effort. Launch arguments are limited
+to 256 arguments of 8,192 characters each and 128 KiB total UTF-8 bytes,
+including terminators. The action replies with
+`{id, stdout, stderr, exitCode}`; invalid parameters and unsupported actions
+reply with `{id, error}`. Installation stays a separate operation. Setup finishes
+before the app stops. If the stop or the launch fails, the action restores the
+previous app target, launch settings, and capability environment. The deep link
+opens after the app is running, so a failed `openUrl` keeps the new launch.
+
+### App controls
+
+- `app.stop`: `{udid, bundleId}`. Terminates the app; returns an error if it
+  cannot be terminated, including when it is already stopped.
+- `app.openUrl`: `{udid, bundleId, url}`. Opens a deep link with best-effort
+  custom-scheme pre-approval, without first restarting the app. To launch and open
+  a link together, use `app.launch` with `openUrl`. URLs are limited to 8,192
+  characters and cannot contain NUL.
+
+Both actions require a specific Simulator UDID and use the authenticated
+`/exec-ws` channel.
+
+### App data files
+
+- `app.container`: `{udid, bundleId, type?: "app" | "data"}`. Returns the
+  container path. The default remains `"app"`; select `"data"` for writable app storage.
+- `app.file.list`: `{udid, bundleId, relativePath?}`. Returns a JSON array of
+  entry names and types. Omit the path for the container root. Limited to 1000 entries.
+- `app.file.read`: `{udid, bundleId, relativePath}`. Returns file bytes as base64,
+  limited to 10 MiB per regular file.
+- `app.file.remove`: `{udid, bundleId, relativePath}`. Deletes one regular file,
+  never a directory.
+
+These API actions use the authenticated `/exec-ws` channel and require a specific
+Simulator UDID. Paths are relative to the selected app's **data** container;
+traversal and symlinks encountered during path checks, including in the container
+root or its ancestors, are refused. Keep the app
+stopped and prevent other tools from changing its directories during an operation.
+Requests are serialized with app controls on the same device; another device can
+proceed independently. The preview UI has no storage editor. These actions are
+currently iOS Simulator only; serve-emu does not expose equivalent file actions.
+Android parity remains outside this serve-sim rollout.
+
+### Uploading an app fixture
+
+`app.file.upload`: `{udid, bundleId, uploadId, relativePath, overwrite?}` copies a
+completed staged upload into the app's data container, creating parent directories.
+It returns JSON with `relativePath` and the copied byte count. Writes are atomic
+and refuse existing files unless `overwrite: true`. Files are limited to 10 MiB;
+staged uploads remain available until `upload.remove` or staging cleanup.
+Within a server, staging resets, pruning and removals wait while a copy reads its
+source bytes. Each server process stages uploads in its own folder, so an upload ID
+names only uploads sent to that server. Send `upload.append` and `app.file.upload`
+to the same server. The staging size limit counts the folders of all servers; two
+servers that upload at the same time can each pass it by one chunk. Each
+upload chunk removes the folders of servers that exited, and uploads older than six
+hours in any folder. A copy that already opened its source still reads all of it.
+
+Send requests sequentially: `app.stop` → `upload.append` → `app.file.upload` →
+`app.launch`, then `upload.remove` when the staged source is no longer needed.
+Finish all chunks before copying, and keep the app stopped until all related
+files are in place. Atomicity applies to each file, not a multi-file transaction.
+
+For example, seed `Documents/session.json` or an app-compatible SQLite database.
+The app must understand the format. For SQLite, stop the app and use a consistent
+checkpointed snapshot, or restore the matching database and WAL files together.
+These actions copy bytes; they do not translate JSON into AsyncStorage, import
+Keychain entries, create backend sessions, or execute uploaded JavaScript.

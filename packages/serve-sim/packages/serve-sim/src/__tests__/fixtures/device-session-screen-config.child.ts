@@ -1,7 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { createServer, type Server } from "http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { NativeScreenInfo, MjpegFrame } from "../../native";
+import { readSavedHingeState, writeSavedHingeState } from "../../hinge-saved-state";
+import { UDID, useTempStateDir } from "../helpers";
+
+const tempState = useTempStateDir();
+afterAll(() => tempState.restore());
 
 let screen: NativeScreenInfo;
 let screenReads = 0;
@@ -17,6 +22,8 @@ let hingePoseDelay = 0;
 let hingePoseGate: Promise<void> | undefined;
 let hingeResult = true;
 let hingeSupported = false;
+let hingeSupportGate: Promise<void> | undefined;
+let orientationResult = true;
 let physicalOrientationSupported = false;
 let physicalOrientationSupportGate: Promise<void> | undefined;
 let nativeHingeState: { hingeAngle?: number; physicalOrientation?: string; tableMode?: boolean } = {};
@@ -25,6 +32,10 @@ let touchError: Error | undefined;
 const inputCalls: string[] = [];
 const keyEvents: { type: string; usage: number }[] = [];
 const touchEvents: { kind: string; args: unknown[] }[] = [];
+const scrollEvents: unknown[][] = [];
+const scrollOperations: string[] = [];
+let scrollGate: Promise<void> | undefined;
+let cancelScrollGate: Promise<void> | undefined;
 const axCharacters: string[] = [];
 let axFailures = 0;
 let axDelay = 0;
@@ -61,10 +72,21 @@ const addon = {
       inputCalls.push("key");
       keyEvents.push({ type, usage });
     }
-    async scroll() { inputCalls.push("scroll"); }
+    async scroll(...args: unknown[]) {
+      inputCalls.push("scroll");
+      scrollEvents.push(args);
+      scrollOperations.push("scroll");
+      await scrollGate;
+    }
+    async cancelScroll() {
+      inputCalls.push("cancelScroll");
+      scrollOperations.push("cancel-start");
+      await cancelScrollGate;
+      scrollOperations.push("cancel-end");
+    }
     async digitalCrown() { inputCalls.push("digitalCrown"); }
-    async orientation() { inputCalls.push("orientation"); return true; }
-    async supportsHingeAngle() { inputCalls.push("supportsHingeAngle"); return hingeSupported; }
+    async orientation() { inputCalls.push("orientation"); return orientationResult; }
+    async supportsHingeAngle() { inputCalls.push("supportsHingeAngle"); await hingeSupportGate; return hingeSupported; }
     async supportsPhysicalOrientation() {
       inputCalls.push("supportsPhysicalOrientation");
       await physicalOrientationSupportGate;
@@ -119,6 +141,7 @@ const inputCommands: Array<{
   { name: "buttonHid", call: (hid) => hid.buttonHid(0x0c, 0xe9) },
   { name: "key", call: (hid) => hid.key("down", 4) },
   { name: "scroll", call: (hid) => hid.scroll(0, 100, 1398, 2034) },
+  { name: "cancelScroll", call: (hid) => hid.cancelScroll() },
   { name: "digitalCrown", call: (hid) => hid.digitalCrown(1) },
   { name: "orientation", call: (hid) => hid.orientation(4), result: true },
   { name: "supportsHingeAngle", call: (hid) => hid.supportsHingeAngle(), result: true },
@@ -194,6 +217,7 @@ let ws: WebSocket | undefined;
 let errorLog: ReturnType<typeof spyOn<typeof console, "error">> | undefined;
 
 beforeEach(() => {
+  writeSavedHingeState(UDID, {});
   inputSetupError = undefined;
   touchError = undefined;
   inputCalls.length = 0;
@@ -201,6 +225,10 @@ beforeEach(() => {
   axCharacters.length = 0;
   axFailures = 0;
   touchEvents.length = 0;
+  scrollEvents.length = 0;
+  scrollOperations.length = 0;
+  scrollGate = undefined;
+  cancelScrollGate = undefined;
   axDelay = 0;
   axGate = undefined;
   hardwareKeyboard = "on";
@@ -220,6 +248,8 @@ beforeEach(() => {
   hingePoseGate = undefined;
   hingeResult = true;
   hingeSupported = true;
+  hingeSupportGate = undefined;
+  orientationResult = true;
   physicalOrientationSupported = true;
   physicalOrientationSupportGate = undefined;
 });
@@ -257,7 +287,7 @@ async function start(
   mjpeg = undefined;
   screenChanged = undefined;
   screenReadGate = undefined;
-  session = new DeviceSession("SCREEN-TEST");
+  session = new DeviceSession(UDID);
   await session.start();
   server = createServer((req, res) => req.url === "/config"
     ? session!.handleConfig(req, res)
@@ -912,6 +942,221 @@ describe("shifted keyboard routing", () => {
   });
 });
 
+describe("wheel ownership", () => {
+  const sendTo = (socket: WebSocket, tag: number, payload: object) => socket.send(Buffer.concat([
+    Buffer.from([tag]), Buffer.from(JSON.stringify(payload)),
+  ]));
+  const wheel = (socket: WebSocket, dy = 0.1) => sendTo(socket, 0x0b, { dx: 0, dy });
+  const state = () => session as unknown as {
+    admittedHidSockets: Set<unknown>;
+    hidSockets: Set<unknown>;
+    inFlightOrderedMessages: WeakMap<object, number>;
+    inputQueueDraining: boolean;
+  };
+  const waitForCleanup = (remaining: number) => waitUntil(() =>
+    state().admittedHidSockets.size === remaining && !state().inputQueueDraining);
+  const connect = async (url: string) => {
+    const client = new WebSocket(url.replace("http:", "ws:"));
+    await new Promise<void>((resolve, reject) => {
+      client.once("open", resolve);
+      client.once("error", reject);
+    });
+    return client;
+  };
+
+  test.each(["disconnect", "overload", "shutdown"])("cancels the owner's wheel on %s and discards queued wheels", async (cause) => {
+    await start({ width: 1170, height: 2532 });
+    let releaseScroll!: () => void;
+    scrollGate = new Promise<void>((resolve) => { releaseScroll = resolve; });
+    wheel(ws!);
+    await waitUntil(() => scrollEvents.length === 1);
+    try {
+      if (cause === "shutdown") session!.close();
+      else if (cause === "disconnect") ws!.terminate();
+      else {
+        const closed = new Promise<number>((resolve) => ws!.once("close", resolve));
+        for (let index = 0; index < 1030; index++) wheel(ws!);
+        expect(await closed).toBe(1013);
+      }
+      await waitUntil(() => state().hidSockets.size === 0);
+    } finally {
+      scrollGate = undefined;
+      releaseScroll();
+    }
+    await waitForCleanup(0);
+    expect(scrollEvents).toHaveLength(1);
+    expect(scrollOperations).toEqual(["scroll", "cancel-start", "cancel-end"]);
+  });
+
+  test("awaits cancellation before handing the wheel to another viewer and ignores the old viewer's cleanup", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const second = await connect(url);
+    let releaseCancel!: () => void;
+    try {
+      wheel(ws!);
+      await waitUntil(() => scrollEvents.length === 1);
+      cancelScrollGate = new Promise<void>((resolve) => { releaseCancel = resolve; });
+      wheel(second, 0.2);
+      await waitUntil(() => scrollOperations.includes("cancel-start"));
+      expect(scrollEvents).toHaveLength(1);
+      cancelScrollGate = undefined;
+      releaseCancel();
+      await waitUntil(() => scrollEvents.length === 2);
+      ws!.terminate();
+      await waitForCleanup(1);
+      expect(scrollOperations).toEqual(["scroll", "cancel-start", "cancel-end", "scroll"]);
+      wheel(second, 0.3);
+      await waitUntil(() => scrollEvents.length === 3);
+      expect(inputCalls.filter((call) => call === "cancelScroll")).toHaveLength(1);
+    } finally {
+      cancelScrollGate = undefined;
+      releaseCancel?.();
+      second.terminate();
+    }
+    await waitForCleanup(0);
+    expect(inputCalls.filter((call) => call === "cancelScroll")).toHaveLength(2);
+  });
+
+  test("a viewer that closes during preemption cannot start its delayed wheel", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const second = await connect(url);
+    let releaseCancel!: () => void;
+    try {
+      wheel(ws!);
+      await waitUntil(() => scrollEvents.length === 1);
+      cancelScrollGate = new Promise<void>((resolve) => { releaseCancel = resolve; });
+      wheel(second, 0.2);
+      await waitUntil(() => scrollOperations.includes("cancel-start"));
+      second.terminate();
+      await waitUntil(() => state().hidSockets.size === 1);
+      cancelScrollGate = undefined;
+      releaseCancel();
+      await waitForCleanup(1);
+      expect(scrollEvents).toHaveLength(1);
+      expect(scrollOperations).toEqual(["scroll", "cancel-start", "cancel-end"]);
+      wheel(ws!, 0.3);
+      await waitUntil(() => scrollEvents.length === 2);
+      expect(inputCalls.filter((call) => call === "cancelScroll")).toHaveLength(1);
+    } finally {
+      cancelScrollGate = undefined;
+      releaseCancel?.();
+      second.terminate();
+    }
+  });
+
+  test("a wheel delayed by capture startup cannot take ownership after its viewer disconnects", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const firstSocket = [...state().hidSockets][0] as object;
+    const second = await connect(url);
+    let releaseCapture!: () => void;
+    (session as unknown as { captureStart: Promise<void> }).captureStart = new Promise<void>((resolve) => {
+      releaseCapture = resolve;
+    });
+    try {
+      wheel(ws!);
+      await waitUntil(() => state().inFlightOrderedMessages.get(firstSocket) === 1);
+      ws!.terminate();
+      await waitUntil(() => state().hidSockets.size === 1);
+      wheel(second, 0.2);
+      releaseCapture();
+      await waitUntil(() => scrollEvents.length === 1);
+      await waitForCleanup(1);
+      expect(scrollEvents[0]![1]).toBe(0.2 * 2532);
+      expect(inputCalls).not.toContain("cancelScroll");
+    } finally {
+      releaseCapture();
+      second.terminate();
+    }
+  });
+
+  test("a malformed direct begin still cancels the outstanding wheel before its viewer disconnects", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const second = await connect(url);
+    errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      wheel(ws!);
+      await waitUntil(() => scrollEvents.length === 1);
+      touchError = new Error("Could not convert parameter 1 to type Double");
+      sendTo(second, 0x03, { type: "begin", y: 0.5 });
+      await waitUntil(() => errorLog!.mock.calls.length === 1);
+      ws!.terminate();
+      await waitForCleanup(1);
+      expect(inputCalls.filter((call) => ["scroll", "cancelScroll", "touch"].includes(call)))
+        .toEqual(["scroll", "cancelScroll", "touch"]);
+      expect(scrollOperations).toEqual(["scroll", "cancel-start", "cancel-end"]);
+    } finally {
+      touchError = undefined;
+      second.terminate();
+    }
+  });
+
+  test.each([0x03, 0x05])("a direct touch that disconnects during wheel cancellation cannot start later (tag %s)", async (tag) => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const second = await connect(url);
+    let releaseCancel!: () => void;
+    try {
+      wheel(ws!);
+      await waitUntil(() => scrollEvents.length === 1);
+      cancelScrollGate = new Promise<void>((resolve) => { releaseCancel = resolve; });
+      sendTo(second, tag, { type: "begin", x: 0.5, y: 0.5, x1: 0.2, y1: 0.2, x2: 0.8, y2: 0.8 });
+      await waitUntil(() => scrollOperations.includes("cancel-start"));
+      second.terminate();
+      await waitUntil(() => state().hidSockets.size === 1);
+      cancelScrollGate = undefined;
+      releaseCancel();
+      await waitForCleanup(1);
+      expect(touchEvents).toEqual([]);
+      expect(scrollOperations).toEqual(["scroll", "cancel-start", "cancel-end"]);
+    } finally {
+      cancelScrollGate = undefined;
+      releaseCancel?.();
+      second.terminate();
+    }
+  });
+
+  test("same-viewer wheels accumulate while zero and invalid wheels from another viewer leave ownership intact", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const second = await connect(url);
+    try {
+      wheel(ws!);
+      wheel(ws!, 0.2);
+      await waitUntil(() => scrollEvents.length === 2);
+      wheel(second, 0);
+      wheel(second, 1e308);
+      await waitUntil(() => scrollEvents.length === 4);
+      expect(inputCalls).not.toContain("cancelScroll");
+      second.terminate();
+      await waitForCleanup(1);
+      expect(inputCalls).not.toContain("cancelScroll");
+      ws!.terminate();
+      await waitForCleanup(0);
+      expect(inputCalls.filter((call) => call === "cancelScroll")).toHaveLength(1);
+    } finally {
+      second.terminate();
+    }
+  });
+
+  test.each([0x03, 0x05])("a direct touch begin preempts wheel ownership before its old viewer disconnects (tag %s)", async (tag) => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const second = await connect(url);
+    try {
+      wheel(ws!);
+      await waitUntil(() => scrollEvents.length === 1);
+      sendTo(second, tag, { type: "begin", x: 0.5, y: 0.5, x1: 0.2, y1: 0.2, x2: 0.8, y2: 0.8 });
+      await waitUntil(() => touchEvents.length === 1);
+      ws!.terminate();
+      await waitForCleanup(1);
+      expect(inputCalls.filter((call) => call === "cancelScroll")).toHaveLength(1);
+      expect(touchEvents.map((event) => event.args[0])).toEqual(["begin"]);
+      sendTo(second, tag, { type: "end", x: 0.5, y: 0.5, x1: 0.2, y1: 0.2, x2: 0.8, y2: 0.8 });
+      await waitUntil(() => touchEvents.length === 2);
+      expect(touchEvents.map((event) => event.args[0])).toEqual(["begin", "end"]);
+    } finally {
+      second.terminate();
+    }
+  });
+});
+
 describe("native active screen config", () => {
   test("acknowledges input before capture publishes screen dimensions", async () => {
     const { admissions, configs } = await start({ width: 0, height: 0 });
@@ -1069,14 +1314,61 @@ describe("native active screen config", () => {
   });
 
   test("waits for Duo's actual orientation instead of briefly rotating a locked app", async () => {
-    const { configs } = await start({ width: 1398, height: 2034, orientation: "portrait", screenId: 1 }, true);
+    const { configs, controlResults } = await start({ width: 1398, height: 2034, orientation: "portrait", screenId: 1 }, true);
     await waitUntil(() => configs.at(-1)?.supportsHingeAngle === true);
-    const readsBefore = screenReads;
     ws!.send(Buffer.concat([Buffer.from([0x07]), Buffer.from(JSON.stringify({ orientation: "landscape_left" }))]));
-    await waitUntil(() => screenReads > readsBefore);
+    // Table Mode is unavailable here; its queued rejection fences rotation and prior config delivery.
+    ws!.send(Buffer.concat([Buffer.from([0x10]), Buffer.from(JSON.stringify({ requestId: 1, command: { control: "table", value: true } }))]));
+    await waitUntil(() => controlResults.length === 1);
+    expect(controlResults[0]).toMatchObject({ requestId: 1, ok: false });
+    expect(tableModes).toEqual([]);
     expect(configs.every((config) => config.orientation === "portrait")).toBe(true);
     screen = { ...screen, orientation: "landscape_left" };
     await waitUntil(() => configs.at(-1)?.orientation === "landscape_left");
+  });
+
+  test("keeps regular-device framing rotated when returning to portrait-only Home", async () => {
+    const { configs, controlResults } = await start({ width: 1206, height: 2622, orientation: "portrait", screenId: 1 });
+    await waitUntil(() => configs.at(-1)?.supportsHingeAngle === false);
+    ws!.send(Buffer.concat([Buffer.from([0x07]), Buffer.from(JSON.stringify({ orientation: "landscape_left" }))]));
+    // The unavailable Table Mode command acknowledges completion without changing the device.
+    const fence = async (requestId: number) => {
+      ws!.send(Buffer.concat([Buffer.from([0x10]), Buffer.from(JSON.stringify({ requestId, command: { control: "table", value: true } }))]));
+      await waitUntil(() => controlResults.length === requestId);
+      expect(controlResults.at(-1)).toMatchObject({ requestId, ok: false });
+    };
+    await fence(1);
+    expect(configs.at(-1)?.orientation).toBe("landscape_left");
+    for (const orientation of ["landscape_left", "portrait"] as const) {
+      screen = { ...screen, orientation };
+      await screenChanged!();
+      await fence(controlResults.length + 1);
+      expect(configs.at(-1)?.orientation).toBe("landscape_left");
+    }
+    orientationResult = false;
+    ws!.send(Buffer.concat([Buffer.from([0x07]), Buffer.from(JSON.stringify({ orientation: "landscape_right" }))]));
+    await fence(controlResults.length + 1);
+    expect(configs.at(-1)?.orientation).toBe("landscape_left");
+    expect(tableModes).toEqual([]);
+  });
+
+  test("uses Duo readback after hinge capability resolves following an early rotation", async () => {
+    let release!: () => void;
+    hingeSupportGate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const { configs, controlResults } = await start({ width: 1398, height: 2034, orientation: "portrait", screenId: 1 }, true);
+      ws!.send(Buffer.concat([Buffer.from([0x07]), Buffer.from(JSON.stringify({ orientation: "landscape_left" }))]));
+      ws!.send(Buffer.concat([Buffer.from([0x10]), Buffer.from(JSON.stringify({ requestId: 1, command: { control: "table", value: true } }))]));
+      await waitUntil(() => inputCalls.includes("orientation"));
+      await screenChanged!();
+      release();
+      await waitUntil(() => configs.at(-1)?.supportsHingeAngle === true);
+      await waitUntil(() => controlResults.length === 1);
+      expect(configs.find((config) => config.supportsHingeAngle === true)?.orientation).toBe("portrait");
+      expect(configs.every((config) => config.orientation === "portrait")).toBe(true);
+    } finally {
+      release();
+    }
   });
 
   test("forwards hinge degrees and acknowledges native success", async () => {
@@ -1169,6 +1461,194 @@ describe("physical hinge controls", () => {
     expect(physicalOrientations).toEqual([]);
   });
 
+  test("reports the native hinge state when a session starts", async () => {
+    let release!: () => void;
+    const { configs, controlResults } = await start(
+      { width: 2007, height: 2853 },
+      true,
+      undefined,
+      true,
+      new Promise<void>((resolve) => { release = resolve; }),
+    );
+    nativeHingeState = { hingeAngle: 90, physicalOrientation: "portrait", tableMode: false };
+    release();
+    await waitUntil(() => configs.at(-1)?.hingeAngle === 90);
+    expect(configs.at(-1)).toMatchObject({
+      supportsHingeAngle: true,
+      hingeAngle: 90,
+      hingePose: null,
+      physicalOrientation: "portrait",
+      tableMode: false,
+      tableModeAvailable: true,
+    });
+    expect(configs.filter((config) => config.supportsHingeAngle === true && config.hingeAngle === undefined)).toEqual([]);
+    send(1, { control: "table", value: true });
+    await waitUntil(() => controlResults.length === 1);
+    expect(controlResults[0]).toEqual({ requestId: 1, ok: true });
+    expect(tableModes).toEqual([true]);
+  });
+
+  test("leaves an angle-only endpoint unselected at startup", async () => {
+    let release!: () => void;
+    const { configs } = await start(
+      { width: 2007, height: 2853 },
+      true,
+      undefined,
+      true,
+      new Promise<void>((resolve) => { release = resolve; }),
+    );
+    nativeHingeState = { hingeAngle: 0 };
+    release();
+    await waitUntil(() => configs.at(-1)?.supportsHingeAngle === true);
+    expect(configs.at(-1)).toMatchObject({ hingeAngle: 0, hingePose: null });
+  });
+
+  test("restores only an explicitly saved pose at the matching native angle", async () => {
+    let release!: () => void;
+    const { configs } = await start(
+      { width: 2007, height: 2853 },
+      true,
+      undefined,
+      true,
+      new Promise<void>((resolve) => { release = resolve; }),
+    );
+    writeSavedHingeState(UDID, { hingeAngle: 90, hingePose: "book", physicalOrientation: "portrait", tableMode: false });
+    nativeHingeState = { hingeAngle: 90 };
+    release();
+    await waitUntil(() => configs.at(-1)?.supportsHingeAngle === true);
+    expect(configs.at(-1)).toMatchObject({ hingeAngle: 90, hingePose: "book", physicalOrientation: "portrait", tableMode: false });
+  });
+
+  test("keeps a hinge command's state over a slower startup read", async () => {
+    let release!: () => void;
+    const { configs, controlResults } = await start(
+      { width: 2007, height: 2853 },
+      true,
+      undefined,
+      true,
+      new Promise<void>((resolve) => { release = resolve; }),
+    );
+    nativeHingeState = { hingeAngle: 180 };
+    ws!.send(Buffer.concat([Buffer.from([0x0f]), Buffer.from(JSON.stringify({ angle: 90 }))]));
+    await waitUntil(() => configs.at(-1)?.hingeAngle === 90);
+    release();
+    await waitUntil(() => configs.at(-1)?.supportsPhysicalOrientation === true);
+    send(1, { control: "physical", value: "facedown" });
+    await waitUntil(() => controlResults.length === 1);
+    expect(controlResults[0]).toEqual({ requestId: 1, ok: true });
+    expect(configs.at(-1)).toMatchObject({ hingeAngle: 90 });
+  });
+
+  test("keeps the saved orientation through a Table Mode command sent before discovery", async () => {
+    let release!: () => void;
+    const { controlResults, configs } = await start(
+      { width: 2007, height: 2853 },
+      true,
+      undefined,
+      true,
+      new Promise<void>((resolve) => { release = resolve; }),
+    );
+    writeSavedHingeState(UDID, { hingeAngle: 90, hingePose: "book", physicalOrientation: "portrait", tableMode: false });
+    nativeHingeState = { hingeAngle: 90 };
+    send(1, { control: "table", value: false });
+    await waitUntil(() => controlResults.length === 1);
+    expect(controlResults[0]).toEqual({ requestId: 1, ok: true });
+    expect(readSavedHingeState(UDID, 90)).toEqual({ hingePose: null, physicalOrientation: "portrait", tableMode: false });
+    release();
+    await waitUntil(() => configs.at(-1)?.supportsHingeAngle === true);
+    expect(configs.at(-1)).toMatchObject({ hingeAngle: 90, physicalOrientation: "portrait", tableModeAvailable: true });
+    send(2, { control: "table", value: true });
+    await waitUntil(() => controlResults.length === 2);
+    expect(controlResults[1]).toEqual({ requestId: 2, ok: true });
+  });
+
+  test("keeps the saved orientation through an angle command sent before discovery", async () => {
+    let release!: () => void;
+    const { controlResults, configs } = await start(
+      { width: 2007, height: 2853 },
+      true,
+      undefined,
+      true,
+      new Promise<void>((resolve) => { release = resolve; }),
+    );
+    writeSavedHingeState(UDID, { hingeAngle: 90, hingePose: "book", physicalOrientation: "portrait", tableMode: false });
+    nativeHingeState = { hingeAngle: 90 };
+    send(1, { control: "angle", value: 90 });
+    await waitUntil(() => controlResults.length === 1);
+    expect(controlResults[0]).toEqual({ requestId: 1, ok: true });
+    expect(readSavedHingeState(UDID, 90)).toEqual({ hingePose: null, physicalOrientation: "portrait", tableMode: false });
+    release();
+    await waitUntil(() => configs.at(-1)?.supportsHingeAngle === true);
+    expect(configs.at(-1)).toMatchObject({ hingeAngle: 90, hingePose: null, physicalOrientation: "portrait", tableModeAvailable: true });
+    send(2, { control: "table", value: true });
+    await waitUntil(() => controlResults.length === 2);
+    expect(controlResults[1]).toEqual({ requestId: 2, ok: true });
+  });
+
+  test("keeps the saved orientation through a failed pose command sent before discovery", async () => {
+    let release!: () => void;
+    const { controlResults, configs } = await start(
+      { width: 2007, height: 2853 },
+      true,
+      undefined,
+      true,
+      new Promise<void>((resolve) => { release = resolve; }),
+    );
+    writeSavedHingeState(UDID, { hingeAngle: 90, hingePose: "book", physicalOrientation: "portrait", tableMode: false });
+    nativeHingeState = { hingeAngle: 90 };
+    hingeResult = false;
+    send(1, { control: "pose", value: "laptop" });
+    await waitUntil(() => controlResults.length === 1);
+    expect(controlResults[0]).toMatchObject({ requestId: 1, ok: false });
+    expect(readSavedHingeState(UDID, 90)).toEqual({ hingePose: null, physicalOrientation: "portrait" });
+    hingeResult = true;
+    release();
+    await waitUntil(() => configs.at(-1)?.supportsHingeAngle === true);
+    expect(configs.at(-1)).toMatchObject({ hingeAngle: 90, hingePose: null, physicalOrientation: "portrait", tableModeAvailable: true });
+    send(2, { control: "table", value: true });
+    await waitUntil(() => controlResults.length === 2);
+    expect(controlResults[1]).toEqual({ requestId: 2, ok: true });
+  });
+
+  test("does not restore a physical orientation that a startup rotation cleared", async () => {
+    let release!: () => void;
+    const { controlResults, configs } = await start(
+      { width: 2007, height: 2853 },
+      true,
+      undefined,
+      true,
+      new Promise<void>((resolve) => { release = resolve; }),
+    );
+    writeSavedHingeState(UDID, { hingeAngle: 90, hingePose: "book", physicalOrientation: "portrait", tableMode: false });
+    nativeHingeState = { hingeAngle: 90 };
+    ws!.send(Buffer.concat([Buffer.from([0x07]), Buffer.from(JSON.stringify({ orientation: "landscape_left" }))]));
+    await waitUntil(() => inputCalls.includes("orientation"));
+    release();
+    await waitUntil(() => configs.at(-1)?.supportsHingeAngle === true);
+    expect(configs.at(-1)).toMatchObject({ hingeAngle: 90, hingePose: null, tableMode: false });
+    expect(configs.at(-1)).not.toHaveProperty("physicalOrientation");
+    expect(readSavedHingeState(UDID, 90)).toEqual({ hingePose: null, tableMode: false });
+    send(1, { control: "table", value: true });
+    await waitUntil(() => controlResults.length === 1);
+    expect(controlResults[0]?.ok).toBe(false);
+    expect(tableModes).toEqual([]);
+  });
+
+  test("keeps a manually entered preset angle unselected after restart", async () => {
+    const { controlResults } = await start({ width: 2007, height: 2853 }, true);
+    send(1, { control: "pose", value: "book" });
+    send(2, { control: "angle", value: 90 });
+    await waitUntil(() => controlResults.length === 2);
+    expect(readSavedHingeState(UDID, 90)).toEqual({ hingePose: null, physicalOrientation: "portrait", tableMode: false });
+
+    session!.close();
+    nativeHingeState = { hingeAngle: 90 };
+    session = new DeviceSession(UDID);
+    await session.start();
+    await waitUntil(() => session!.screenConfig().supportsHingeAngle === true);
+    expect(session.screenConfig()).toMatchObject({ hingeAngle: 90, hingePose: null, physicalOrientation: "portrait", tableMode: false });
+  });
+
   test("rejects physical surface selection when Table Mode is unavailable", async () => {
     const { controlResults, configs } = await start(
       { width: 2007, height: 2853 },
@@ -1193,7 +1673,7 @@ describe("physical hinge controls", () => {
   test("lets native capability validation handle commands while discovery is pending", async () => {
     let finishDiscovery!: () => void;
     const discovery = new Promise<void>((resolve) => { finishDiscovery = resolve; });
-    const { controlResults } = await start(
+    const { controlResults, configs } = await start(
       { width: 2007, height: 2853 },
       true,
       undefined,
@@ -1201,12 +1681,15 @@ describe("physical hinge controls", () => {
       discovery,
     );
 
+    nativeHingeState = { hingeAngle: 90 };
     send(1, { control: "physical", value: "faceup" });
     await waitUntil(() => controlResults.length === 1);
     expect(controlResults[0]).toEqual({ requestId: 1, ok: true });
     expect(physicalOrientations).toEqual(["faceup"]);
 
     finishDiscovery();
+    await waitUntil(() => configs.at(-1)?.hingeAngle === 90);
+    expect(configs.at(-1)).toMatchObject({ hingeAngle: 90, hingePose: null, physicalOrientation: "faceup", tableMode: false });
   });
 
   test("acknowledges distinct poses and broadcasts them to every client", async () => {

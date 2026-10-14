@@ -19,6 +19,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import type { CaptureStore } from "./store";
+import { assertNotOwnProxy, OwnProxyPortError, type CaptureUpstream } from "./upstream";
 import { dirnameOf } from "../runtime";
 import { withStateLockSync } from "../state-lock";
 import { DEFAULT_CAPTURE_FIELDS, type CaptureField } from "./fields";
@@ -124,6 +125,8 @@ export interface CaptureProxy {
   /** Port file for the injected library; lives in the session confdir. */
   portFile: string;
   caPem: () => Promise<string>;
+  /** Change what the running proxy keeps; takes effect for the next flow the addon reports. */
+  setFields: (fields: readonly CaptureField[]) => void;
   close: () => Promise<void>;
 }
 
@@ -298,6 +301,8 @@ export function parseMitmPids(psOutput: string, marker: string, selfPid: number)
 }
 
 export interface MitmProxyDeps {
+  upstream?: CaptureUpstream | null;
+  allocatePort?: () => Promise<number>;
   fields?: readonly CaptureField[];
   onUnexpectedExit?: (reason: string) => void;
   onOversizedControlBody?: (info: OversizedControlBodyInfo) => void;
@@ -361,11 +366,14 @@ async function startMitmProxyAttempt(
   mitmdump: string,
   addon: string,
   fields: readonly CaptureField[],
+  upstream: CaptureUpstream | null,
 ): Promise<CaptureProxy> {
-  const proxyPort = await freePort();
+  const proxyPort = await (deps.allocatePort ?? freePort)();
+  assertNotOwnProxy(upstream, proxyPort);
   const confdir = mkdtempSync(join(tmpdir(), CONFDIR_PREFIX));
   const caFile = join(confdir, "mitmproxy-ca-cert.pem");
   const portFile = join(confdir, "proxy-port");
+  const { path: fieldsFile, write: writeFields } = captureFieldsFile(confdir);
   const token = randomBytes(16).toString("hex");
   let control: Awaited<ReturnType<typeof startMitmControl>>;
   try {
@@ -381,9 +389,11 @@ async function startMitmProxyAttempt(
   }
 
   let child: ChildProcess;
+  let credentialPipeFailed = false;
   try {
     seedCaInto(confdir);
     writeFileSync(portFile, String(proxyPort));
+    writeFields(fields);
     child = spawn(
       mitmdump,
       [
@@ -394,22 +404,31 @@ async function startMitmProxyAttempt(
         String(proxyPort),
         "--set",
         "anticomp=true",
+        ...(upstream ? ["--mode", `upstream:${upstream.url}`] : []),
         "--set",
         `confdir=${confdir}`,
         "-s",
         addon,
       ],
       {
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
           SERVE_SIM_CAPTURE_CONTROL_URL: `http://127.0.0.1:${control.port}`,
           SERVE_SIM_CAPTURE_CONTROL_TOKEN: token,
           SERVE_SIM_CAPTURE_FIELDS: fields.join(","),
+          [CAPTURE_FIELDS_FILE_ENV]: fieldsFile,
           [MAX_CONTROL_BODY_BYTES_ENV]: String(maxControlBodyBytes()),
         },
       },
     );
+    // @ref LLP 0005#proxy-credentials — Startup credentials travel over stdin, never a file or mitmdump argv.
+    // The addon reads to EOF before announcing readiness.
+    child.stdin!.once("error", () => {
+      credentialPipeFailed = true;
+      child.kill("SIGTERM");
+    });
+    child.stdin!.end(upstream?.auth ?? "");
   } catch (error) {
     await closeControlServer(control);
     rmSync(confdir, { recursive: true, force: true });
@@ -493,10 +512,11 @@ async function startMitmProxyAttempt(
     announced = true;
   });
   while (Date.now() < deadline) {
-    if (exited) {
+    if (exited || credentialPipeFailed) {
       await close();
       throw new Error(
         `The capture proxy exited before it started listening.\n${
+          credentialPipeFailed ? "Could not deliver the capture proxy's startup credentials." :
           spawnError || output.trim() || "No output from mitmproxy."
         }`,
       );
@@ -511,6 +531,10 @@ async function startMitmProxyAttempt(
         address: `127.0.0.1:${proxyPort}`,
         portFile,
         caPem: async () => readFileSync(caFile, "utf8"),
+        setFields: (next) => {
+          writeFields(next);
+          control.setFields(next);
+        },
         close,
       };
     }
@@ -524,6 +548,24 @@ async function startMitmProxyAttempt(
   throw new Error(
     `The capture proxy did not start within ${STARTUP_TIMEOUT_MS / 1000}s. ${stalled}\n${output.trim()}`,
   );
+}
+
+export const CAPTURE_FIELDS_FILE_ENV = "SERVE_SIM_CAPTURE_FIELDS_FILE";
+
+/**
+ * The session's fields file in its private confdir. The addon re-reads it when it changes, so the
+ * session's fields can change without a restart; each write renames a new owner-only file into place.
+ */
+export function captureFieldsFile(confdir: string): { path: string; write: (fields: readonly CaptureField[]) => void } {
+  const path = join(confdir, "capture-fields");
+  return {
+    path,
+    write(fields) {
+      const temp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+      writeFileSync(temp, fields.join(","), { mode: 0o600 });
+      renameSync(temp, path);
+    },
+  };
 }
 
 function addressAlreadyInUse(error: unknown): boolean {
@@ -540,14 +582,15 @@ export async function startMitmProxy(
   if (!mitmdump) throw new Error(mitmdumpMissingMessage(process.env.SERVE_SIM_MITMDUMP));
   const addon = locateAddon();
   const fields = deps.fields ?? DEFAULT_CAPTURE_FIELDS;
+  const upstream = deps.upstream ?? null;
 
   let lastError: unknown;
   for (let attempt = 0; attempt < STARTUP_ATTEMPTS; attempt++) {
     try {
-      return await startMitmProxyAttempt(store, deps, mitmdump, addon, fields);
+      return await startMitmProxyAttempt(store, deps, mitmdump, addon, fields, upstream);
     } catch (error) {
       lastError = error;
-      if (!addressAlreadyInUse(error) && !(error instanceof CaRaceLostError)) throw error;
+      if (!addressAlreadyInUse(error) && !(error instanceof CaRaceLostError) && !(error instanceof OwnProxyPortError)) throw error;
     }
   }
   throw lastError;
