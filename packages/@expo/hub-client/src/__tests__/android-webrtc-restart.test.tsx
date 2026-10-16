@@ -290,8 +290,8 @@ test('an input-only outage keeps healthy Android WebRTC video visible beyond rec
   expect(client.error).toBeNull();
   const inputError = 'WebRTC input disconnected. Retrying...';
   expect(client.inputError).toBe(inputError);
-  expect(container.querySelector('[role="status"]')?.textContent).toBe(inputError);
-  expect(container.textContent).toBe(inputError);
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  expect(container.textContent).toBe('');
   expect(video.srcObject).toBe(stream);
   expect(peer.closed).toBe(false);
 

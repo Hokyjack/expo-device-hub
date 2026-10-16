@@ -51,6 +51,7 @@ const CONFIG: Record<
  * adopts the stream's exact aspect ratio. With artwork, the calibrated opening
  * clips a centered, undistorted stream and may crop its edges to prevent leaks.
  */
+// @ref LLP 0013#input-feedback — consumers own input notices without replacing live media
 export function PhoneFrame({
   device,
   client,

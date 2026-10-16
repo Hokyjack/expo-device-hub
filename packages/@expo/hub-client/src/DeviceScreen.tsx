@@ -135,7 +135,6 @@ export function DeviceScreen({
     screen,
     status,
     error,
-    // @ref LLP 0013#input-feedback — input errors overlay live video; they never replace it
   } = client;
   const canMulti = !!sendMultiTouch;
 
