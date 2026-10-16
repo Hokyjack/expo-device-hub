@@ -260,6 +260,7 @@ export function DeviceScreen({
   }, [sendTouch, sendMultiTouch, altSecondFinger]);
   const cancelBrowserInput = useCallback(() => {
     // Retire unfinished queued gestures before their synthetic end can complete them.
+    scrollSenderRef.current?.cancel();
     cancelInput?.();
     releasePressedKeys();
     cancelGestures();
@@ -452,7 +453,7 @@ export function DeviceScreen({
           borderRadius,
           outline: 'none',
         }}
-        onBlur={cancelBrowserInput}
+        onBlur={releasePressedKeys}
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}
         onPointerDown={onPointerDown}

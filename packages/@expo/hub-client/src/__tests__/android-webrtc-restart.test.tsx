@@ -46,7 +46,7 @@ class ControlSocket {
   onopen: (() => void) | null = null;
   onclose: ((event: { code: number }) => void) | null = null;
 
-  constructor() {
+  constructor(readonly url: string, readonly protocols?: string[]) {
     ControlSocket.instances.push(this);
   }
   sent: string[] = [];
@@ -177,18 +177,19 @@ afterEach(async () => {
   for (const restore of restoreGlobals.splice(0).reverse()) restore();
 });
 
-function Harness({ device = 'emulator-5554', enabled = true } = {}) {
+function Harness({ device = 'emulator-5554', enabled = true, token = null }: { device?: string; enabled?: boolean; token?: string | null } = {}) {
   client = useAndroidDeviceClient({
     baseUrl: 'http://device.test',
     device,
     enabled,
+    token,
     streamMode: 'webrtc',
   });
   return <DeviceScreen client={client} />;
 }
 
-async function mount() {
-  await act(async () => root.render(<Harness />));
+async function mount(token: string | null = null) {
+  await act(async () => root.render(<Harness token={token} />));
   expect(offers).toBe(1);
   video = container.querySelector('video')!;
   Object.defineProperties(video, {
@@ -267,3 +268,29 @@ test('retired Android input callbacks stay retired when returning to the same de
   await act(async () => client.sendTouch({ phase: 'begin', x: 0.2, y: 0.3 }));
   expect(inputMessages()).toHaveLength(1);
 });
+
+for (const returnToOriginalToken of [false, true]) {
+ test(`retired token-A Android callbacks cannot reach ${returnToOriginalToken ? 'replacement A' : 'token B'} socket`, async () => {
+  await mount('token-A');
+  const oldClient = client;
+  const oldSocket = ControlSocket.instances.at(-1)!;
+  await act(async () => root.render(<Harness token="token-B" />));
+  await act(async () => ControlSocket.instances.at(-1)!.onopen?.());
+  if (returnToOriginalToken) {
+   await act(async () => root.render(<Harness token="token-A" />));
+   await act(async () => ControlSocket.instances.at(-1)!.onopen?.());
+  }
+  const replacementSocket = ControlSocket.instances.at(-1)!;
+  expect(replacementSocket).not.toBe(oldSocket);
+  expect(replacementSocket.protocols).toEqual([`serve-emu.token.${returnToOriginalToken ? 'token-A' : 'token-B'}`]);
+  const before = replacementSocket.sent.length;
+  await act(async () => {
+   oldClient.sendTouch({phase:'begin',x:.2,y:.3});
+   oldClient.sendKey({phase:'down',code:'KeyA',key:'a',repeat:false});
+  });
+  const stale = replacementSocket.sent.slice(before).map(s=>JSON.parse(s));
+  expect(stale).toEqual([]);
+  await act(async () => client.sendTouch({phase:'begin',x:.4,y:.5}));
+  expect(replacementSocket.sent.length).toBe(before+1);
+ });
+}
