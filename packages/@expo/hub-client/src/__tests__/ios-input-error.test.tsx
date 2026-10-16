@@ -606,13 +606,13 @@ test('a real helper replacement at the same URL retires the previous callbacks',
 
 
 for (const gesture of ['single', 'multi'] as const) {
-  for (const cancellation of ['onLostPointerCapture', 'onPointerCancel', 'failed capture blur'] as const) {
+  for (const cancellation of ['onLostPointerCapture', 'onPointerCancel', 'failed capture blur', 'failed capture leave'] as const) {
     test(`${cancellation} discards an unfinished unadmitted ${gesture} gesture`, async () => {
       const harness = await renderIosClient(true, { pid: 1 }, true);
       const socket = harness.helperSockets()[0]!;
       socket.readyState = 1;
       const surface = renderer!.root.findByProps({ role: 'application' });
-      if (cancellation === 'failed capture blur') {
+      if (cancellation.startsWith('failed capture')) {
         harness.surface.setPointerCapture = () => { throw new Error('capture unavailable'); };
       }
       const pointer = { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 20, clientY: 60,
@@ -620,6 +620,7 @@ for (const gesture of ['single', 'multi'] as const) {
       await act(async () => surface.props.onPointerDown(pointer));
       await act(async () => {
         if (cancellation === 'failed capture blur') surface.props.onBlur();
+        else if (cancellation === 'failed capture leave') surface.props.onPointerLeave(pointer);
         else surface.props[cancellation](pointer);
       });
       await act(async () => socket.onmessage?.({ data: Uint8Array.of(0x83).buffer }));

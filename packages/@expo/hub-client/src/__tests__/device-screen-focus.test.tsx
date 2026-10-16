@@ -219,3 +219,15 @@ test("normal pointerup ignores synchronous capture loss and uses the real releas
   ]);
   expect(frames.size).toBe(0);
 });
+
+test("an uncaptured pointer leaving the surface ends the drag without needing a focus change", async () => {
+  const s = await gestureHarness(true);
+  await s.dispatch("pointerdown");
+  await s.dispatch("pointermove", 40);
+  // React derives pointerleave from the bubbling native pointerout event.
+  await s.dispatch("pointerout", 120);
+  frame();
+  expect(s.touches.map((sample) => sample.phase)).toEqual(["begin", "end"]);
+  expect(document.activeElement).toBe(surface);
+  expect(frames.size).toBe(0);
+});

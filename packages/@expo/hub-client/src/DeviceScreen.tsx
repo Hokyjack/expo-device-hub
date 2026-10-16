@@ -479,6 +479,11 @@ export function DeviceScreen({
         onKeyUp={onKeyUp}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
+        onPointerLeave={(event) => {
+          if (pointersRef.current.has(event.pointerId) && !capturedPointersRef.current.has(event.pointerId)) {
+            cancelBrowserInput();
+          }
+        }}
         onPointerUp={onPointerUp}
         onPointerCancel={(event) => {
           if (pointersRef.current.has(event.pointerId)) cancelBrowserInput();
