@@ -1,7 +1,7 @@
 import React from "react";
 import { test, expect } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { DeviceClientProvider } from "../DeviceClientProvider";
+import { DeviceClientProvider, useDeviceClientSelector } from "../DeviceClientProvider";
 import { useDeviceScreenClient } from "../useDeviceScreenClient";
 import { DeviceScreen } from "../DeviceScreen";
 import { createGlobalStubs } from "./test-globals";
@@ -41,6 +41,7 @@ test("provider harmless config refresh must preserve the active drag through rea
     url: "http://localhost:3200/sim/helper/DEVICE-A",
     wsUrl: "ws://localhost:3200/sim/helper/DEVICE-A/ws",
     inputAdmission: true,
+    streamSettingsEndpoint: "/stream-settings",
     execToken: "test-token",
     streamSettings: { transport: "http", codec: "mjpeg", mjpegFps: 30 },
   };
@@ -80,11 +81,17 @@ test("provider harmless config refresh must preserve the active drag through rea
       close() {}
     },
   );
-  stubGlobal("fetch", async (url: string | URL | Request) =>
-    new URL(String(url), "http://localhost:3200").pathname === "/sim/api"
-      ? Response.json(config)
-      : Response.json({ devices: [] }),
-  );
+  stubGlobal("fetch", async (url: string | URL | Request) => {
+    const path = new URL(String(url), "http://localhost:3200").pathname;
+    if (path === "/sim/api") return Response.json(config);
+    if (path === "/sim/stream-settings") return Response.json(config.streamSettings);
+    return Response.json({ devices: [] });
+  });
+  let observedFps: number | undefined;
+  function SettingsProbe() {
+    observedFps = useDeviceClientSelector((client) => client.streamSettings?.mjpegFps);
+    return null;
+  }
   function Screen() {
     return <DeviceScreen client={useDeviceScreenClient()} />;
   }
@@ -100,6 +107,7 @@ test("provider harmless config refresh must preserve the active drag through rea
           }}
         >
           <Screen />
+          <SettingsProbe />
         </DeviceClientProvider>,
         { createNodeMock: () => surface },
       );
@@ -113,6 +121,7 @@ test("provider harmless config refresh must preserve the active drag through rea
       control.onopen?.();
       control.onmessage?.({ data: JSON.stringify({ ready: true }) });
     });
+    expect(observedFps).toBe(30);
     const application = renderer!.root.findByProps({ role: "application" });
     const pointer = {
       pointerId: 1,
@@ -126,11 +135,10 @@ test("provider harmless config refresh must preserve the active drag through rea
       nativeEvent: {},
     };
     await act(async () => application.props.onPointerDown(pointer));
-    const configSubscription = control.sent.find(
+    const sub = control.sent.find(
       (x) =>
         typeof x.sub === "number" && String(x.path ?? x.subscribe ?? "").includes("/api/events"),
     );
-    const sub = configSubscription ?? control.sent.find((x) => typeof x.sub === "number");
     expect(sub).toBeDefined();
     await act(async () =>
       control.onmessage?.({
@@ -140,6 +148,7 @@ test("provider harmless config refresh must preserve the active drag through rea
         }),
       }),
     );
+    expect(observedFps).toBe(60);
     expect(input.sent.filter((x) => x.tag === 3).map((x) => x.type)).toEqual(["begin"]);
     expect(Socket.instances.filter((s) => s.url.includes("/helper/"))).toHaveLength(1);
     expect(input.readyState).toBe(1);
