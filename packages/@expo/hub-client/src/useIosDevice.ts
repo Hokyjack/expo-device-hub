@@ -104,6 +104,7 @@ import { presentedVideoFrameDelta } from './video-frame-metadata';
 import {
   type WebRtcCodec,
   webRtcFallbackDecision,
+  createLadderBackoff,
 } from './webrtc-fallback';
 import { createInputSocket } from './input-socket';
 import { type WsMessagePayload, type WsMessageSent } from './ws-send-queue';
@@ -247,6 +248,7 @@ interface ResolvedConfig {
   streamSettingsUrl: string | null;
   /** Initial server-provided stream settings, if present. */
   initialStreamSettings: unknown;
+  transportLocked: boolean;
   gridApiUrl: string | null;
   webRtcCodec: WebRtcCodec;
   webRtcIceServers?: WebRtcIceServer[];
@@ -396,6 +398,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
   const imgRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [webRtcVideoElement, setWebRtcVideoElement] = useState<HTMLVideoElement | null>(null);
   const streamUrlRef = useRef<string | null>(null);
   const [avccFallback, dispatchAvccFallback] = useReducer(avccFallbackReducer, initialAvccFallback);
   const [webRtcCodec, setWebRtcCodecState] = useState<DeviceWebRtcCodec>('h264');
@@ -408,6 +411,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     deviceSettingConfigRef.current = config;
   }, [config]);
   const activityLastSampleAtRef = useRef(0);
+  const streamTransportLocked = config?.transportLocked ?? false;
   const useWebRtc = streamMode === 'webrtc';
   const wantsAvcc = streamMode === 'h264';
   const useAvcc = wantsAvcc && isAvccSupported() && !avccFallback.fellBack;
@@ -440,16 +444,19 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     (el: HTMLCanvasElement | HTMLImageElement | HTMLVideoElement | null) => {
       if (useWebRtc) {
         videoRef.current = (el as HTMLVideoElement) ?? null;
+        setWebRtcVideoElement(videoRef.current);
         canvasRef.current = null;
         imgRef.current = null;
       } else if (useAvcc) {
         canvasRef.current = (el as HTMLCanvasElement) ?? null;
         videoRef.current = null;
+        setWebRtcVideoElement(null);
         imgRef.current = null;
       } else {
         imgRef.current = (el as HTMLImageElement) ?? null;
         canvasRef.current = null;
         videoRef.current = null;
+        setWebRtcVideoElement(null);
         if (el) applyStreamSrc();
       }
     },
@@ -738,6 +745,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
             : absoluteMiddlewareUrl(c.streamSettingsEndpoint)
           : null,
         initialStreamSettings: c.streamSettings,
+        transportLocked: c.streamSettings?.transport === 'webrtc',
         gridApiUrl: absoluteMiddlewareUrl(c.gridApiEndpoint ?? `${basePath}/grid/api`),
         webRtcCodec: c.streamSettings?.transport === 'webrtc' ? c.streamSettings.codec : 'h264',
         ...(c.streamSettings?.transport === 'webrtc' && c.streamSettings.iceServers
@@ -892,15 +900,26 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     codec: activeWebRtcCodec,
     iceServers: config?.webRtcIceServers,
     fetchImpl: videoFetch,
+    transportLocked: streamTransportLocked,
+    raiseH264Level: true,
   });
   const handledWebRtcFailureRef = useRef<string | null>(null);
+  const ladderBackoffRef = useRef(createLadderBackoff());
+  useEffect(() => {
+    ladderBackoffRef.current = createLadderBackoff();
+  }, [config?.url, webRtcCodec]);
+  // A locked transport still reports exhaustion while its ladder waits to restart.
+  const exhaustedDecision =
+    webRtcFailure?.kind === 'codec'
+      ? webRtcFallbackDecision(webRtcCodec, activeWebRtcCodec, webRtcFailure, streamTransportLocked)?.type
+      : undefined;
   const webRtcCodecsExhausted =
-    webRtcFailure?.kind === 'codec' &&
-    webRtcFallbackDecision(webRtcCodec, activeWebRtcCodec, webRtcFailure)?.type === 'switch-to-http';
+    exhaustedDecision === 'switch-to-http' || exhaustedDecision === 'restart-ladder';
 
   const setWebRtcCodec = useCallback(
     (codec: DeviceWebRtcCodec) => {
       setInitialWebRtcCodec(codec);
+      ladderBackoffRef.current = createLadderBackoff();
       // Selecting an already-active failed codec does not change the stream
       // hook's inputs, so retry its session explicitly.
       if (codec === activeWebRtcCodec && webRtcFailure) restartWebRtc();
@@ -912,9 +931,18 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     if (!useWebRtc || !webRtcFailure) return;
     if (handledWebRtcFailureRef.current === webRtcFailure.sessionId) return;
     handledWebRtcFailureRef.current = webRtcFailure.sessionId;
-    const decision = webRtcFallbackDecision(webRtcCodec, activeWebRtcCodec, webRtcFailure);
+    const decision = webRtcFallbackDecision(webRtcCodec, activeWebRtcCodec, webRtcFailure, streamTransportLocked);
+    const ladderBackoff = ladderBackoffRef.current;
+    // Every codec failure counts, so a slow walk cannot look like a settled stream.
+    if (streamTransportLocked && decision) ladderBackoff.noteFailure(performance.now());
     if (decision?.type === 'retry-codec') setActiveWebRtcCodec(decision.codec);
-  }, [useWebRtc, webRtcFailure, webRtcCodec, activeWebRtcCodec]);
+    if (decision?.type !== 'restart-ladder') return;
+    const timer = setTimeout(() => {
+      setActiveWebRtcCodec(decision.codec);
+      restartWebRtc();
+    }, ladderBackoff.takeRestartDelayMs());
+    return () => clearTimeout(timer);
+  }, [useWebRtc, webRtcFailure, webRtcCodec, activeWebRtcCodec, streamTransportLocked, restartWebRtc]);
 
   useEffect(() => {
     if (!useWebRtc) return;
@@ -927,9 +955,10 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     }
   }, [useWebRtc, webRtcError, webRtcStream, webRtcCodecsExhausted]);
 
+  // @ref LLP 0012#hidden-tabs-and-startup-diagnosis — surface remounts keep the peer
   useEffect(() => {
     if (!useWebRtc) return;
-    const video = videoRef.current;
+    const video = webRtcVideoElement;
     if (!video) return;
     let stopped = false;
     let firstFrame = true;
@@ -958,6 +987,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
       }
     };
     const onVideoFrame: VideoFrameRequestCallback = (_now, metadata) => {
+      if (stopped) return;
       const presentedFrameDelta = presentedVideoFrameDelta(
         previousPresentedFrames,
         metadata.presentedFrames,
@@ -970,6 +1000,10 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     };
     const onTimeUpdate = () => markFrame();
     const onLoadedData = () => markFrame(0);
+    const onVisibilityChange = () => {
+      if (stopped || document.hidden || videoRef.current !== video || !video.paused) return;
+      void video.play().catch(() => {});
+    };
 
     video.srcObject = webRtcStream;
     if (webRtcStream) {
@@ -977,11 +1011,13 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
       if (supportsVideoFrameCallback) frameCallback = video.requestVideoFrameCallback(onVideoFrame);
       else video.addEventListener('timeupdate', onTimeUpdate);
       video.addEventListener('loadeddata', onLoadedData, { once: true });
+      document.addEventListener('visibilitychange', onVisibilityChange);
       void video.play().catch(() => {});
     }
 
     return () => {
       stopped = true;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       video.removeEventListener('loadeddata', onLoadedData);
       video.removeEventListener('timeupdate', onTimeUpdate);
       if (frameCallback && typeof video.cancelVideoFrameCallback === 'function') {
@@ -989,7 +1025,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
       }
       video.srcObject = null;
     };
-  }, [useWebRtc, webRtcStream, markWebRtcFrameDecoded, onAvccFrame]);
+  }, [useWebRtc, webRtcStream, webRtcVideoElement, markWebRtcFrameDecoded, onAvccFrame]);
 
   // ── H.264 AVCC (WebCodecs) with serve-sim's MJPEG fallback policy. ──
   useEffect(() => {
