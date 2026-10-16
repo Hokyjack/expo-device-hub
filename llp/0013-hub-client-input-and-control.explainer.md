@@ -44,8 +44,9 @@ The iOS adapter uses the admission socket [observed: `createInputSocket` call in
 
 `createControlSocket` owns one exec-ws connection for one client identity (URL and token), never for the whole module [observed: `control-socket.ts`].
 
-- At most 8 requests are in flight. serve-sim serves 8 action requests per control connection [observed: `MAX_ACTIONS_IN_FLIGHT_PER_SOCKET` in `socket/server-control.ts`].
-- A health probe runs every 5 s, and a probe without a reply in 5 s closes the connection. A connection attempt also stops after 5 s.
+- HubClient queues requests at a client-side limit of 8 in flight, matching serve-sim's server limit (`MAX_ACTIONS_IN_FLIGHT_PER_SOCKET` in `socket/server-control.ts`). The serve-sim browser client does not impose this queue [observed: `control-socket.ts`; `socket/client-control.ts`].
+- A sent request keeps its server slot after caller timeout or abort, until the server replies or the connection fails. If all 8 slots belong to abandoned requests, queued and new requests fail immediately with "too many actions in flight on this connection". Health probes still run, subscriptions stay connected, and a late server reply makes its slot usable again. Writes are never replayed [observed: `sendRequests` and `inFlight` in `control-socket.ts`].
+- HubClient adds a health probe every 5 s; a probe without a reply in 5 s closes the connection. serve-sim's browser client has no health probe. Both clients stop a connection attempt after 5 s [observed: `control-socket.ts`; `socket/client-control.ts`].
 - Each subscription retries by itself after the server ends it. One ended subscription does not close the others.
 
 serve-sim's client uses the same 5 s connect timeout and 2 s stream retry [observed: `socket/client-control.ts`].
@@ -61,7 +62,11 @@ Settings, host actions, logs, events, activity metrics and config updates share 
 
 ## Keyboard input
 
-When the shift key makes a printable character, the client sends the character with `shifted: true`, in addition to the HID usage. serve-sim types it through the software keyboard when the Simulator's hardware keyboard is off and the device has no hinge-angle support. Otherwise, or when software typing fails, it sends the HID usage [observed: `iosMessageForKeyboardInput` in `keyboard.ts`; serve-sim `client/client.tsx`, tag `0x06` in `device-session.ts`].
+HubClient sends `key` for every single-character printable keydown without Control, Meta, or Alt, in addition to its physical HID usage. Shifted non-space characters retain `shifted: true`; releases, shortcuts, navigation keys, and dead keys keep physical HID semantics [observed: `iosMessageForKeyboardInput` in `keyboard.ts`; `DeviceScreen.tsx`].
+
+The updated serve-sim helper uses the software-keyboard character path for shifted characters or when the character does not match that physical US key, while matching unshifted US characters stay on the fast HID path. This requires the Simulator hardware keyboard to be off and the device to have no hinge-angle support. Hardware-keyboard-on, hinge-capable devices, older helpers, and rejected software-keyboard characters retain HID fallback; characters absent from the Simulator keyboard remain a limitation [observed: tag `0x06` in `device-session.ts`; `US_KEYBOARD_MAP` in `text-to-keys.ts`].
+
+This extends serve-sim's browser client, which supplies character metadata only for shifted characters. HubClient also supplies unshifted metadata so a German-layout `KeyY` can type `z` instead of the physical US `y` [observed: `keyboard.ts`; serve-sim `client/client.tsx`].
 
 ## Input ownership
 
