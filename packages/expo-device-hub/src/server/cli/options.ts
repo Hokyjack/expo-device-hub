@@ -191,6 +191,8 @@ export function parseCliOptions(args: string[]): CliOptions {
     'metrics-cors-origin': string[];
     'hide-sidebar': boolean;
     'hide-boot-device': boolean;
+    'share-url'?: string;
+    'disable-share': boolean;
     'require-token': boolean;
     'frame-ancestor': string[];
     'cors-origin': string[];
@@ -224,6 +226,10 @@ export function parseCliOptions(args: string[]): CliOptions {
         'metrics-cors-origin': { type: 'string', multiple: true, default: [] },
         'hide-sidebar': { type: 'boolean', default: false },
         'hide-boot-device': { type: 'boolean', default: false },
+        // Undocumented no-ops: the Hub has no Share button, but the EAS worker may pass
+        // serve-sim's share flags to either CLI.
+        'share-url': { type: 'string' },
+        'disable-share': { type: 'boolean', default: false },
         'require-token': { type: 'boolean', default: false },
         'frame-ancestor': { type: 'string', multiple: true, default: [] },
         'cors-origin': { type: 'string', multiple: true, default: [] },

@@ -254,6 +254,12 @@ describe('parseCliOptions', () => {
     expect(parseCliOptions(['--host', '0.0.0.0', '--require-token']).host).toBe('0.0.0.0');
   });
 
+  // serve-sim's Share button options; the Hub has no Share button, so it accepts and ignores them.
+  test('accepts --share-url and --disable-share, as serve-sim does', () => {
+    expect(parseCliOptions(['--disable-share'])).toEqual(parseCliOptions([]));
+    expect(parseCliOptions(['--share-url', 'https://expo.dev/preview/abc'])).toEqual(parseCliOptions([]));
+  });
+
   test('collects every --frame-ancestor, as serve-sim does', () => {
     expect(
       parseCliOptions([
