@@ -35,7 +35,15 @@ export function createControlSocket(
   // Aborted or timed-out writes occupy a server slot until their reply.
   const inFlight = new Set<number>();
   const subscriptions = new Map<number, Subscription>();
+  const connectionListeners = new Set<(ready: boolean) => void>();
 
+  const notifyConnection = (value: boolean) => {
+    for (const listener of [...connectionListeners]) {
+      try {
+        listener(value);
+      } catch {}
+    }
+  };
   const clearHealth = () => {
     clearTimeout(healthTimer);
     healthTimer = undefined;
@@ -63,7 +71,9 @@ export function createControlSocket(
     try {
       ws?.close();
     } catch {}
-    if (subscriptions.size && retryTimer === undefined) {
+    notifyConnection(false);
+    if (disposed) return;
+    if ((subscriptions.size || connectionListeners.size) && retryTimer === undefined) {
       retryTimer = setTimeout(() => {
         retryTimer = undefined;
         connect();
@@ -151,6 +161,7 @@ export function createControlSocket(
           if (socket !== ws) break;
           sendSubscription(id, sub);
         }
+        if (socket === ws) notifyConnection(true);
         return;
       }
       if (!ready) return;
@@ -226,7 +237,23 @@ export function createControlSocket(
         subscriptions.delete(id);
         clearTimeout(sub.timer);
         if (ready && socket) send(socket, { unsub: id });
-        if (!subscriptions.size) {
+        if (!subscriptions.size && !connectionListeners.size) {
+          clearTimeout(retryTimer);
+          retryTimer = undefined;
+        }
+      };
+    },
+    /**
+     * Observe authentication (`true`) and loss (`false`) of the channel. An
+     * observer keeps the channel reconnecting, like a subscription does.
+     */
+    onConnectionChange(listener: (ready: boolean) => void) {
+      if (disposed) return () => {};
+      connectionListeners.add(listener);
+      if (!ready) connect();
+      return () => {
+        connectionListeners.delete(listener);
+        if (!subscriptions.size && !connectionListeners.size) {
           clearTimeout(retryTimer);
           retryTimer = undefined;
         }
