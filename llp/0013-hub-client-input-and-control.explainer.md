@@ -34,7 +34,7 @@ serve-sim's client uses the same rules and numbers, with one difference [observe
 
 The iOS adapter uses the admission socket [observed: `createInputSocket` call in `useIosDevice.ts`]:
 
-- After admission, it turns off the Simulator's hardware keyboard, so that iOS shows its software keyboard.
+- After admission, it sends the hardware-keyboard-off setup frame directly before flushing queued controls. The helper serializes the setting change with subsequent input and gives the guest keyboard a three-second visibility window before a software-character attempt. The helper uses a bounded read-only keyboard probe rather than a full UI snapshot, and a setup revision prevents a new transition from accepting an older probe result. A stalled visibility read cannot hold the shared input queue past that window or schedule late typing; while its single read remains pending, input retains HID fallback. Failed setup sends close the connection and retain fresh pending input for retry [observed: `admit` in `input-socket.ts`; `onAdmitted` in `useIosDevice.ts`; tag `0x0e` in serve-sim `device-session.ts`].
 - A refusal notice clears when a socket is admitted. A config update for the same helper does not clear it. A replaced helper (new `pid` or exec token) gets a new input socket, which clears a client-limit notice and starts a new refusal grace.
 - A lost-input notice expires 5 s after the refusal, also when a socket is admitted sooner or the helper is replaced, because neither brings back lost commands. Selecting another device clears it at once, before that device's config arrives, and so does a new input URL. A restarting helper that briefly reports no config does not [observed: `lostInputTimerRef` in `useIosDevice.ts`]. serve-sim shows it as a toast with the default duration, and dismisses it early only when its input URL changes [observed: `client/client.tsx`, `client/components/app-toasts.tsx`].
 - Fresh input waits through initial discovery and temporary null configs for the same helper. The hook transfers unsent messages without resetting their 1.5 s age or 32-message bound; a requested device, server, token, or known helper identity change discards them [observed: `pendingInputRef` in `useIosDevice.ts`; `takePending` in `input-socket.ts`].
@@ -60,6 +60,14 @@ Settings, host actions, logs, events, activity metrics and config updates share 
 - The channel retries after 1.5 s. When the config subscription ends, HTTP discovery also runs 1.5 s later, to recover rotated credentials [observed: config subscription effect in `useIosDevice.ts`].
 - Settings polls pause while the channel is down and read again once it authenticates [observed: `onConnectionChange` in `control-socket.ts`]. A read in flight when the channel drops is rejected, never replayed. An ended stream or a subscription change does not interrupt settings.
 - The metrics subscription drives `activityStatus`: `loading` on subscribe, `ready` on stream metadata or a sample, and `error` when the stream ends or the channel drops.
+
+## Keyboard input
+
+HubClient sends `key` for every single-character printable keydown without Control, Meta, or Alt, in addition to its physical HID usage. Shifted non-space characters retain `shifted: true`; releases, shortcuts, navigation keys, and dead keys keep physical HID semantics [observed: `iosMessageForKeyboardInput` in `keyboard.ts`; `DeviceScreen.tsx`].
+
+The updated serve-sim helper uses the software-keyboard character path for shifted characters or when the character does not match that physical US key, while matching unshifted US characters stay on the fast HID path. This requires the Simulator hardware keyboard to be off and the device to have no hinge-angle support. Hardware-keyboard-on, hinge-capable devices, older helpers, and rejected software-keyboard characters retain HID fallback; characters absent from the Simulator keyboard remain a limitation [observed: tag `0x06` in `device-session.ts`; `US_KEYBOARD_MAP` in `text-to-keys.ts`].
+
+This extends serve-sim's browser client, which supplies character metadata only for shifted characters. HubClient also supplies unshifted metadata so a German-layout `KeyY` can type `z` instead of the physical US `y` [observed: `keyboard.ts`; serve-sim `client/client.tsx`].
 
 ## Open questions
 
