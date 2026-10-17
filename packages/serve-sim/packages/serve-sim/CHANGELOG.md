@@ -1,5 +1,26 @@
 # @expo/serve-sim
 
+## 0.10.0
+
+### Minor Changes
+
+- dd2de34: Add `actions.describe` for action discovery and generate screenshot filenames when omitted.
+- 9155d7b: Add clipboard read, write, copy, and paste host actions.
+- 587be82: Add host actions for simulator settings, touch, typing and device controls, plus `serve-sim software-keyboard`.
+
+### Patch Changes
+
+- a9a8ebe: Preserve browser-layout printable characters in iOS key messages and consume layout differences through the helper's software keyboard, while preserving shortcuts and HID fallback.
+- 100c8c8: Report oversized host command output.
+- c6b6fe9: Accept simulator names with `-d` in input commands.
+- 0a0bafd: Stop stream routes' watchers and timers when the client leaves during setup.
+- 4a9ad65: Show `hinge` command errors without stack traces.
+- 2d58c0f: Update the live Duo preview from native hinge, physical orientation and tabletop observations, including changes made outside serve-sim.
+- d065008: Keep `permissions list` output complete when piped.
+- 0160c0a: Record video-timed screen rotation, semantic Duo panels and their encoded content rectangles, and natively observed hinge, physical orientation, and tabletop activity.
+- cd4240e: Order software keyboard requests and preserve manual toggles after disconnect.
+- a69693e: Add `springboard.restart` and `app.approveUrlScheme` host actions: restart the simulator's SpringBoard, and let links with a custom URL scheme open an app without the "Open in" prompt.
+
 ## 0.9.0
 
 ### Minor Changes

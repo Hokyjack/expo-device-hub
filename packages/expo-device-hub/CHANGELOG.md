@@ -1,5 +1,11 @@
 # expo-device-hub
 
+## 0.17.1
+
+### Patch Changes
+
+- 14850d3: Accept serve-sim's share options for interface compatibility. They have no effect in the Hub.
+
 ## 0.17.0
 
 ### Minor Changes
