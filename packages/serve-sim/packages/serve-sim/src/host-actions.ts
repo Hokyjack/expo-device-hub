@@ -20,6 +20,9 @@ import { CA_DEBUG_FLAGS } from "./ca-debug";
 import { HINGE_POSITIONS, isHingeAngle } from "./hinge-angle";
 import { UI_OPTIONS } from "./ui-settings";
 import { TouchCoordinate, TouchGesture } from "./touch-gesture";
+import { MAX_PASTEBOARD_TEXT_BYTES, writeSimPasteboard } from "./sim-pasteboard";
+import { cleanupWarningOf } from "./sim-pasteboard-copy";
+import type { StreamSettings } from "./stream-settings";
 import {
   UploadChunk,
   UploadId,
@@ -65,6 +68,11 @@ const Token = z.string().max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must be 
 const FileName = z.string().regex(/^(?!\.)[^/\\\n]{1,255}$/, "must be a plain file name");
 
 const Coordinate = z.number().finite();
+const ClipboardDevice = DeviceUdid.toUpperCase();
+const ClipboardText = z.string().max(MAX_PASTEBOARD_TEXT_BYTES).refine(
+  (text) => Buffer.byteLength(text, "utf8") <= MAX_PASTEBOARD_TEXT_BYTES,
+  "must be at most 4 MiB of UTF-8 text",
+);
 
 function UiSetting(option: string) {
   const spec = UI_OPTIONS[option];
@@ -84,6 +92,10 @@ const CaptureFieldList = z.array(z.enum(CAPTURE_FIELDS)).max(CAPTURE_FIELDS.leng
 );
 
 const ACTION_SCHEMAS = {
+  "clipboard.read": z.object({ udid: ClipboardDevice }).meta({ description: "Read simulator clipboard text." }),
+  "clipboard.write": z.object({ udid: ClipboardDevice, text: ClipboardText }).meta({ description: "Write simulator clipboard text without pasting." }),
+  "clipboard.copy": z.object({ udid: ClipboardDevice }).meta({ description: "Copy the current selection and read its text." }),
+  "clipboard.paste": z.object({ udid: ClipboardDevice, text: ClipboardText.optional() }).meta({ description: "Paste text into the focused field, or paste the current simulator clipboard if omitted." }),
   "appearance.get": z.object({ udid: Device }).meta({ description: "Read light or dark mode." }),
   "appearance.set": z
     .object({ udid: Device, value: z.enum(APPEARANCES) })
@@ -335,6 +347,10 @@ type HostActionName = keyof typeof ACTION_SCHEMAS;
  */
 const PROCEDURE_ACTIONS = [
   "actions.describe",
+  "clipboard.read",
+  "clipboard.write",
+  "clipboard.copy",
+  "clipboard.paste",
   "app.file.upload",
   "app.file.read",
   "app.file.list",
@@ -607,8 +623,34 @@ function fileSourcePath(p: { uploadId: string } | { path: string }): string {
   return "uploadId" in p ? stagedUploadPath(p.uploadId) : p.path;
 }
 
-async function runProcedureAsync(action: ProcedureAction, raw: unknown): Promise<HostActionResult> {
+async function runProcedureAsync(action: ProcedureAction, raw: unknown, streamSettings?: StreamSettings): Promise<HostActionResult> {
   switch (action) {
+    case "clipboard.read":
+    case "clipboard.write":
+    case "clipboard.copy":
+    case "clipboard.paste": {
+      const p = parseParams(action, raw);
+      try {
+        if (action === "clipboard.read") {
+          const { readSimPasteboardResult } = await import("./sim-pasteboard-reader");
+          return ok(JSON.stringify(await readSimPasteboardResult(p.udid)));
+        }
+        if (action === "clipboard.write") {
+          await writeSimPasteboard(p.udid, parseParams(action, raw).text);
+          return ok(JSON.stringify({ ok: true }));
+        }
+        const { getDeviceSession } = await import("./device-session");
+        // @ref LLP 0010#clipboard-host-actions — Copy/Paste may create the viewer's capture session first.
+        const session = getDeviceSession(p.udid, streamSettings);
+        if (action === "clipboard.copy") return ok(JSON.stringify(await session.copyPasteboard()));
+        const cleanupWarning = await session.pastePasteboard("text" in p ? p.text : undefined);
+        return ok(JSON.stringify({ ok: true, ...(cleanupWarning ? { cleanupWarning } : {}) }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const { cleanupWarning } = cleanupWarningOf(error);
+        return { stdout: "", stderr: redactHostPaths([message, cleanupWarning].filter(Boolean).join("\n")), exitCode: 1 };
+      }
+    }
     case "app.file.upload": return runAppFileAction("upload", parseParams(action, raw));
     case "app.file.read": return runAppFileAction("read", parseParams(action, raw));
     case "app.file.list": return runAppFileAction("list", parseParams(action, raw));
@@ -756,13 +798,14 @@ async function runProcedureAsync(action: ProcedureAction, raw: unknown): Promise
 export async function runHostActionAsync(
   msg: HostActionRequest,
   binPath: string,
+  streamSettings?: StreamSettings,
 ): Promise<HostActionResult> {
   const { action, params } = msg;
   if (typeof action !== "string" || !isHostActionName(action)) {
     throw new InvalidHostActionError(`unknown action ${String(action)}`);
   }
   const result = isProcedureAction(action)
-    ? await runProcedureAsync(action, params)
+    ? await runProcedureAsync(action, params, streamSettings)
     : await runInvocation(buildInvocation(action, params, binPath));
   // exec-ws spreads this straight into the reply, so only the three fields the page reads leave
   // the process. `timedOut` steers the message a handler composes; the page has no use for it.
