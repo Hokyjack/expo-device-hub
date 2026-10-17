@@ -10,6 +10,7 @@ import { networkInterfaces } from "os";
 import { extname, join, resolve } from "path";
 import WebSocket from "ws";
 import { onCliInputReady } from "./socket/cli-input";
+import { TouchGesture, sendTouchGestureToWs } from "./touch-gesture";
 import {
   stateDir,
   stateFileForDevice,
@@ -50,7 +51,7 @@ import {
 import { parseCaptureFields } from "./capture/fields";
 import { parseCaptureProxy } from "./capture/upstream";
 import { killOwnListeners } from "./ports";
-import { BOOT_TIMEOUT_MS, findBootedDevice, resolveDevice } from "./device";
+import { BOOT_TIMEOUT_MS, findBootedDevice, resolveDevice, resolveDeviceMatches } from "./device";
 import { openSimulatorHost } from "./simulator-host";
 import { simctl } from "./simctl";
 import { installAppInvocation, runInvocation } from "./host-actions-utils";
@@ -74,6 +75,7 @@ import {
 import { parseIceUrlList, streamHelperArgs, streamSettingsEqual } from "./stream-runtime-args";
 import { MAX_MJPEG_STREAM_FPS, MAX_VIDEO_STREAM_FPS } from "./stream-settings";
 import { parseHingeAngle } from "./hinge-angle";
+import { CA_DEBUG_ALIASES, CA_DEBUG_FLAGS } from "./ca-debug";
 import { readHingeStateFromWs, sendHingeAngleToWs } from "./hinge-command";
 import { finishDeviceRecordingsForShutdown } from "./device-session";
 import { recordingShutdownGraceMs, stopForStreamReplacement, stopProcess } from "./stop-process";
@@ -176,6 +178,20 @@ function getBootedUdids(): Set<string> | null {
   }
 }
 
+function readDeviceState(deviceArg?: string): ServerState | null {
+  if (!deviceArg) return readState();
+  const direct = readState(deviceArg);
+  if (direct) return direct;
+  const states = resolveDeviceMatches(deviceArg)
+    .map(udid => readState(udid))
+    .filter(state => state !== null);
+  if (states.length > 1) {
+    console.error(`Ambiguous streaming device "${deviceArg}": ${states.map(state => state.device).join(", ")}. Use --device <UDID> to select one.`);
+    process.exit(1);
+  }
+  return states[0] ?? null;
+}
+
 function readStateFile(file: string): ServerState | null {
   try {
     if (!existsSync(file)) {
@@ -253,6 +269,21 @@ function openHelperSocket(state: ServerState): WebSocket {
     state.wsUrl,
     state.token ? { headers: { Authorization: `Bearer ${state.token}` } } : undefined,
   );
+}
+
+function sendHelperMessage(state: ServerState, message: Uint8Array): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const ws = openHelperSocket(state);
+    ws.binaryType = "arraybuffer";
+    onCliInputReady(ws, state.inputAdmission === true, () => {
+      ws.send(message);
+      setTimeout(() => { ws.close(); resolve(); }, 50);
+    }, reject);
+    ws.onerror = () => {
+      console.error("Failed to connect to serve-sim server at", state.wsUrl);
+      reject(new Error("WebSocket connection failed"));
+    };
+  });
 }
 
 
@@ -854,6 +885,15 @@ async function gesture(jsonStr: string, deviceArg?: string) {
     process.exit(1);
   }
 
+  if (Array.isArray(touch)) {
+    const result = TouchGesture.safeParse(touch);
+    if (!result.success) {
+      console.error(`Invalid gesture: ${result.error.issues[0]?.message}`);
+      process.exit(1);
+    }
+    return sendTouchGestureToWs(state, result.data);
+  }
+
   return new Promise<void>((resolve, reject) => {
     const ws = openHelperSocket(state);
     ws.binaryType = "arraybuffer";
@@ -888,28 +928,10 @@ async function tap(xArg: string, yArg: string, deviceArg?: string) {
     console.error("No serve-sim server running. Run `serve-sim` first.");
     process.exit(1);
   }
-  return new Promise<void>((resolve, reject) => {
-    const ws = openHelperSocket(state);
-    ws.binaryType = "arraybuffer";
-    const send = (type: "begin" | "end") => {
-      const json = new TextEncoder().encode(JSON.stringify({ type, x, y }));
-      const msg = new Uint8Array(1 + json.length);
-      msg[0] = 0x03;
-      msg.set(json, 1);
-      ws.send(msg);
-    };
-    onCliInputReady(ws, state.inputAdmission === true, () => {
-      send("begin");
-      setTimeout(() => {
-        send("end");
-        setTimeout(() => { ws.close(); resolve(); }, 50);
-      }, 40);
-    }, reject);
-    ws.onerror = () => {
-      console.error("Failed to connect to serve-sim server at", state.wsUrl);
-      reject(new Error("WebSocket connection failed"));
-    };
-  });
+  return sendTouchGestureToWs(state, [
+    { type: "begin", x, y },
+    { type: "end", x, y, delayMs: 40 },
+  ]);
 }
 
 async function typeText(
@@ -1074,19 +1096,10 @@ async function button(buttonName = "home", deviceArg?: string) {
 async function caDebug(option: string, stateRaw: string, deviceArg?: string) {
   const stateArg = (stateRaw ?? "").toLowerCase();
   const enabled = stateArg === "on" || stateArg === "1" || stateArg === "true";
-  const aliases: Record<string, string> = {
-    blended: "debug_color_blended",
-    copies: "debug_color_copies",
-    copied: "debug_color_copies",
-    misaligned: "debug_color_misaligned",
-    offscreen: "debug_color_offscreen",
-    "slow-animations": "debug_slow_animations",
-    slow: "debug_slow_animations",
-  };
-  const resolved = option ? (aliases[option] ?? option) : undefined;
+  const resolved = option ? (CA_DEBUG_ALIASES[option] ?? option) : undefined;
   if (!resolved || !["on", "off", "1", "0", "true", "false"].includes(stateArg)) {
     console.error(
-      `Usage: serve-sim ca-debug <option> <on|off> [-d udid]\n  option shortcuts: ${Object.keys(aliases).join(", ")}`,
+      `Usage: serve-sim ca-debug <option> <on|off> [-d udid]\n  option shortcuts: ${Object.keys(CA_DEBUG_ALIASES).join(", ")}`,
     );
     process.exit(1);
   }
@@ -1134,6 +1147,15 @@ async function memoryWarning(deviceArg?: string) {
       reject(new Error("WebSocket connection failed"));
     };
   });
+}
+
+async function softwareKeyboard(deviceArg?: string) {
+  const stateFile = readDeviceState(deviceArg);
+  if (!stateFile) {
+    console.error("No serve-sim server running. Run `serve-sim` first.");
+    process.exit(1);
+  }
+  return sendHelperMessage(stateFile, new Uint8Array([0x0c]));
 }
 
 // ─── Camera injection ───
@@ -2734,7 +2756,7 @@ program
 
 program
   .command("gesture")
-  .description("Send a touch gesture")
+  .description("Send a touch event or a complete begin/move/end event array")
   .argument("<json>", 'Gesture JSON, e.g. \'{"type":"begin","x":0.5,"y":0.5}\'')
   .option(...deviceOpt)
   .action((json: string, opts) => gesture(json, opts.device));
@@ -2789,8 +2811,7 @@ program
 program
   .command("ca-debug")
   .description(
-    "Toggle a CoreAnimation debug render flag " +
-      "(blended|copies|misaligned|offscreen|slow-animations)",
+    `Toggle a CoreAnimation debug render flag (${Object.keys(CA_DEBUG_FLAGS).join("|")})`,
   )
   .argument("<option>")
   .argument("<state>", "on|off")
@@ -2802,6 +2823,12 @@ program
   .description("Simulate a memory warning on the device")
   .option(...deviceOpt)
   .action((opts) => memoryWarning(opts.device));
+
+program
+  .command("software-keyboard")
+  .description("Show or hide the on-screen keyboard")
+  .option(...deviceOpt)
+  .action((opts) => softwareKeyboard(opts.device));
 
 program
   .command("event-log")

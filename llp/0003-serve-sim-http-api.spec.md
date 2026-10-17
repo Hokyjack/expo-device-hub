@@ -5,7 +5,7 @@
 **Systems:** ServeSim, HubClient
 **Author:** Gabe Debes
 **Date:** 2026-09-23
-**Revised:** 2026-10-14 (rotation readback and app actions; clipboard; server-wide preview sharing; capture reboot status and recording admission; device-state recording manifest)
+**Revised:** 2026-10-15 (rotation readback and app actions; clipboard; server-wide preview sharing; capture reboot status and recording admission; device-state recording manifest; settings and device actions)
 **Related:** LLP 0001, LLP 0002
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
@@ -440,3 +440,62 @@ The app must understand the format. For SQLite, stop the app and use a consisten
 checkpointed snapshot, or restore the matching database and WAL files together.
 These actions copy bytes; they do not translate JSON into AsyncStorage, import
 Keychain entries, create backend sessions, or execute uploaded JavaScript.
+
+### Action coverage
+
+Every serve-sim command or capability that makes sense for users to interact with
+must also be available as a host action on `/exec-ws`. Add or update the action
+alongside the command or capability so action clients can use the same controls
+[confirmed: Gabe Debes, 2026-10-15].
+
+### Input actions
+
+- `tap`: `{udid, x, y}`, with normalized coordinates from 0 to 1.
+- `gesture`: `{udid, events}`, a complete sequence of 2–256 touch events. Each
+  event has `type`, normalized `x` and `y`, optional `edge` (0–4), and optional
+  `delayMs` (0–1000) before that event. Start with `begin`, finish with `end`, and
+  use only `move` between them. Omitted delays default to 40 ms before every event
+  after the first; explicit zero is allowed. Total delay, including defaults, is
+  limited to 30 seconds.
+- `type`: `{udid, text}`, up to 4096 US-keyboard ASCII characters, including
+  newline and tab. Leading dashes are passed literally; CRLF and lone carriage
+  returns are normalized to a single newline before typing.
+
+These actions use the existing CLI input paths. `serve-sim gesture` accepts the
+event array as its JSON argument and keeps one admitted connection for the whole
+sequence, then waits for the input-completion barrier before reporting success.
+The legacy single-event JSON argument remains supported; separate single-event
+calls cannot form a drag because disconnect releases that connection's touch.
+Tap and typing also wait for an input-completion barrier; a disconnect or failed
+barrier reports failure instead of success for input still waiting in the queue.
+
+### Simulator settings and device actions
+
+Each simulator setting in the sidebar has a read action and a write action on
+`/exec-ws`: `<setting>.get` with `{udid}` and `<setting>.set` with `{udid, value}`,
+for `hardwareKeyboard`, `reduceMotion`, `increaseContrast`, `reduceTransparency`,
+`voiceover`, `liquidGlass`, `colorFilter`, `textSize` and `showBorders`. Values are
+the canonical values of `serve-sim ui` (`UI_OPTIONS` in `src/ui-settings.ts`),
+plus `increment` and `decrement` for `textSize`; aliases are refused. `settings.status` returns every setting as JSON.
+
+- `softwareKeyboard.toggle`: `{udid}`. Shows or hides the on-screen keyboard, like ⌘K.
+- `memoryWarning`: `{udid}`. Sends a memory warning to the device.
+- `caDebug.set`: `{udid, option, value}`. `option` is a name from `src/ca-debug.ts`;
+  `value` is `on` or `off`.
+- `hinge.get`: `{udid}`. Reads the hinge state as JSON.
+- `hinge.set`: `{udid, value}`. `value` is `fold`, `half`, `unfold` or an angle from
+  0 to 180.
+- `permissions.list`: `{udid, bundleId?}`. Returns the app permissions as JSON.
+
+Each action runs the matching `serve-sim` CLI command as a child process and replies
+with `{id, stdout, stderr, exitCode}`. `softwareKeyboard.toggle`, `memoryWarning`
+and `caDebug.set` send an input message and do not wait for the device to confirm it.
+
+`serve-sim software-keyboard -d <device>` accepts a UDID or simulator name and
+requires an existing serve-sim server. After a literal state lookup, it matches
+names case-insensitively across runtimes and selects the unique live stream.
+Multiple live matches fail before connecting and list their UDIDs for explicit
+selection with `--device`. The selected record's WebSocket URL, token and
+admission flag stay unchanged, including for legacy helpers [observed:
+`resolveDeviceMatches` in `src/device.ts`, `readDeviceState` and
+`softwareKeyboard` in `src/index.ts`].
