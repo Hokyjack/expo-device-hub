@@ -85,6 +85,12 @@ type InputOperation = {
   reject: (error: unknown) => void;
 };
 
+type SoftwareKeyboardRequest = {
+  request: boolean | "toggle";
+  completion: Promise<void>;
+  complete: () => void;
+};
+
 // AVCC seed tag (StreamFormat.AVCCEnvelope.seedTag). description/keyframe/delta
 // envelopes are framed natively; only the on-connect JPEG seed is built here.
 const AVCC_SEED_TAG = 0x04;
@@ -299,7 +305,8 @@ export class DeviceSession {
   private softwareKeyboardHidden = false;
   private softwareKeyboardSync: Promise<void> = Promise.resolve();
   private softwareKeyboardSyncPending = false;
-  private softwareKeyboardPendingVisible: boolean | undefined;
+  private pendingSoftwareKeyboardMessages = 0;
+  private readonly softwareKeyboardRequests: SoftwareKeyboardRequest[] = [];
   private readonly inputOperationQueues = new Map<HidSocket, InputOperation[]>();
   private inputOperationSequence = 0;
   private readonly clipboardInputBarriers = new Set<number>();
@@ -379,7 +386,7 @@ export class DeviceSession {
   async suspendForReboot(): Promise<void> {
     this.rebootSuspended = true;
     this.inputGeneration++;
-    this.softwareKeyboardPendingVisible = undefined;
+    this.clearSoftwareKeyboardRequests();
     await this.captureStart;
     // A failed recording POST reports its own error and owns no lease to preserve.
     // It must settle before suspend, but its failure must not strand reboot input.
@@ -424,6 +431,7 @@ export class DeviceSession {
   close(): void {
     if (this.phase !== "running") return;
     this.phase = "stopped";
+    this.clearSoftwareKeyboardRequests();
     if (this.recordingLease) clearTimeout(this.recordingLease.timer);
     this.recordingLease = undefined;
     clearTimeout(this.screenRefreshTimer);
@@ -1424,13 +1432,13 @@ export class DeviceSession {
       }
       case 0x0c:
         this.recordHidEvent(tag, {});
-        await this.hid.softwareKeyboard();
+        await this.queueSoftwareKeyboardSync("toggle", ws);
         break;
       case 0x0d: {
-        const m = json<{ visible: boolean }>();
-        if (m) {
+        const m = json<{ visible?: unknown }>();
+        if (typeof m?.visible === "boolean") {
           this.recordHidEvent(tag, m);
-          this.queueSoftwareKeyboardSync(m.visible);
+          await this.queueSoftwareKeyboardSync(m.visible, ws);
         }
         break;
       }
@@ -1710,16 +1718,38 @@ export class DeviceSession {
     });
   }
 
-  private queueSoftwareKeyboardSync(visible: boolean): void {
-    this.softwareKeyboardPendingVisible = visible;
-    if (this.softwareKeyboardSyncPending) return;
-    this.softwareKeyboardSyncPending = true;
-    const generation = this.inputGeneration;
-    this.softwareKeyboardSync = this.softwareKeyboardSync
-      .then(() => this.drainSoftwareKeyboardSync(generation))
-      .finally(() => {
-        this.softwareKeyboardSyncPending = false;
-      });
+  // @ref LLP 0003#software-keyboard-requests — Count pending messages across reconnects, even when visibility requests coalesce.
+  private queueSoftwareKeyboardSync(request: boolean | "toggle", ws?: HidSocket): Promise<void> {
+    if (ws) {
+      if (this.pendingSoftwareKeyboardMessages >= MAX_PENDING_INPUT_OPERATIONS_PER_SOCKET) {
+        this.overloadHidSocket(ws);
+        return Promise.resolve();
+      }
+      this.pendingSoftwareKeyboardMessages++;
+    }
+    const requests = this.softwareKeyboardRequests;
+    let queued = requests.at(-1);
+    if (typeof request === "boolean" && queued && typeof queued.request === "boolean") {
+      queued.request = request;
+    } else {
+      let complete!: () => void;
+      const completion = new Promise<void>((resolve) => { complete = resolve; });
+      queued = { request, completion, complete };
+      requests.push(queued);
+    }
+    if (!this.softwareKeyboardSyncPending) {
+      this.softwareKeyboardSyncPending = true;
+      const generation = this.inputGeneration;
+      const drain = () => this.drainSoftwareKeyboardSync(generation);
+      this.softwareKeyboardSync = this.softwareKeyboardSync.then(drain, drain);
+    }
+    return ws
+      ? queued.completion.finally(() => { this.pendingSoftwareKeyboardMessages--; })
+      : queued.completion;
+  }
+
+  private clearSoftwareKeyboardRequests(): void {
+    for (const request of this.softwareKeyboardRequests.splice(0)) request.complete();
   }
 
   // @ref LLP 0003#printable-key-characters — accepted keyboard setup can precede guest visibility
@@ -2065,10 +2095,24 @@ export class DeviceSession {
   }
 
   private async drainSoftwareKeyboardSync(generation: number): Promise<void> {
-    while (this.canRunInputControl(generation) && this.softwareKeyboardPendingVisible !== undefined) {
-      const visible = this.softwareKeyboardPendingVisible;
-      this.softwareKeyboardPendingVisible = undefined;
-      await this.setSoftwareKeyboardVisible(visible, generation);
+    try {
+      while (this.canRunInputControl(generation)) {
+        const request = this.softwareKeyboardRequests.shift();
+        if (request === undefined) return;
+        try {
+          if (request.request === "toggle") {
+            this.softwareKeyboardHidden = false;
+            await this.hid.softwareKeyboard();
+          } else {
+            await this.setSoftwareKeyboardVisible(request.request, generation);
+          }
+        } finally {
+          request.complete();
+        }
+      }
+    } finally {
+      this.clearSoftwareKeyboardRequests();
+      this.softwareKeyboardSyncPending = false;
     }
   }
 
