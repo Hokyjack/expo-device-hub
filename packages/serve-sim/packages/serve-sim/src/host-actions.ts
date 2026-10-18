@@ -1,6 +1,7 @@
 import { rm, stat } from "fs/promises";
 import { join } from "path";
 import { z } from "zod";
+import { installAppAsync } from "./app-install";
 import { AppRelativePath, runAppFileAction } from "./app-files";
 
 import { CAPTURE_FIELDS } from "./capture/fields";
@@ -9,7 +10,6 @@ import {
   type HostActionResult,
   HostActionTimeoutError,
   type Invocation,
-  installAppInvocation,
   ok,
   runInvocation,
   redactHostPaths,
@@ -368,7 +368,7 @@ const ACTION_SCHEMAS = {
   "app.install": z
     .object({ udid: Device })
     .and(FileSource)
-    .meta({ description: "Install an app from an .ipa file.", args: ["path"], upload: "path" }),
+    .meta({ description: "Install a simulator .app bundle or a .tar.gz/.tgz app archive.", args: ["path"], upload: "path", uploadArchive: "tar.gz" }),
   "app.launch": z
     .object({
       // Launch state and locks use simctl's canonical uppercase UDID.
@@ -473,6 +473,7 @@ const PROCEDURE_ACTIONS = [
   "app.openUrl",
   "app.approveUrlScheme",
   "app.launch",
+  "app.install",
   "upload.append",
   "upload.remove",
   "app.iconPath",
@@ -721,10 +722,6 @@ function buildInvocation(action: InvocationAction, raw: unknown, binPath: string
       const p = parseParams(action, raw);
       return { file: "plutil", args: ["-convert", "json", "-o", "-", p.path] };
     }
-    case "app.install": {
-      const p = parseParams(action, raw);
-      return installAppInvocation(p.udid, fileSourcePath(p));
-    }
     case "media.add": {
       const p = parseParams(action, raw);
       return simctl(["addmedia", p.udid, fileSourcePath(p)]);
@@ -809,6 +806,10 @@ async function runProcedureAsync(
           exitCode: 1,
         };
       }
+    }
+    case "app.install": {
+      const p = parseParams(action, raw);
+      return await installAppAsync(p.udid, fileSourcePath(p));
     }
     case "app.launch": {
       const { udid, bundleId, launchArgs, openUrl } = parseParams(action, raw);

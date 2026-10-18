@@ -24,7 +24,7 @@ export interface Invocation {
  */
 const DEFAULT_ACTION_TIMEOUT_MS = 120_000;
 
-function actionTimeoutMs(): number {
+export function actionTimeoutMs(): number {
   const configured = Number(process.env.SERVE_SIM_ACTION_TIMEOUT_MS);
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_ACTION_TIMEOUT_MS;
 }

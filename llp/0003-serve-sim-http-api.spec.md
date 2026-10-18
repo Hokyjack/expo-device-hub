@@ -414,6 +414,21 @@ proceed independently. The preview UI has no storage editor. These actions are
 currently iOS Simulator only; serve-emu does not expose equivalent file actions.
 Android parity remains outside this serve-sim rollout.
 
+### Installing a simulator app
+
+`app.install` accepts a simulator `.app` bundle on the host or a gzip tar archive
+containing exactly one outer `.app` bundle. EAS `.tar.gz`/`.tgz` artifacts and
+extensionless staged gzip uploads are supported. The catalog advertises
+`uploadArchive: "tar.gz"`; clients can use it to package a local `.app` directory
+before uploading. Device `.ipa` builds are not simulator apps.
+
+Archives extract into a private temporary directory, preserving executable bits.
+Traversal, external links and special files are refused. Expanded contents are
+limited to 2 GiB and 100,000 entries. Archive installs are serialized and share one
+action deadline across queueing, extraction and installation. Temporary contents
+are removed after success or failure. The uploaded source remains until the client
+removes it with `upload.remove`.
+
 ### Uploading an app fixture
 
 `app.file.upload`: `{udid, bundleId, uploadId, relativePath, overwrite?}` copies a
