@@ -397,6 +397,7 @@ actor CaptureEngine {
         let sessions = await webRTCPublisher?.senderStatistics(sessionId: sessionId) ?? []
         let counts = await frameCapture.frameCounts()
         let pick = await frameCapture.pickTimings()
+        let snapshot = await frameCapture.snapshotTimings()
         let timings = await frameCapture.captureTimings()
         let poll = await frameCapture.pollTimings()
         let surface = await frameCapture.surfaceLossTimings()
@@ -408,6 +409,11 @@ actor CaptureEngine {
                 pickCount: pick.count,
                 pickSumMs: Double(pick.sumNs) / 1_000_000,
                 pickMaxMs: Double(pick.maxNs) / 1_000_000,
+                snapshotCount: snapshot.count,
+                snapshotSumMs: Double(snapshot.sumNs) / 1_000_000,
+                snapshotMaxMs: Double(snapshot.maxNs) / 1_000_000,
+                snapshotOver16Ms: snapshot.over16Ms,
+                snapshotFailures: snapshot.failures,
                 screenFrames: counts.screen,
                 idleFrames: counts.idle,
                 offeredFrames: flow?.offered,

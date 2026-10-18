@@ -54,10 +54,16 @@ actor FrameCapture {
     private var webRTCCanvasCache: Dimensions?
     private var screenObservers: [UUID: @Sendable () -> Void] = [:]
     private var frameCount: UInt64 = 0
-    /// Counted by which path produced the frame, callback or idle deadline.
+    /// Snapshot attempts exclude unchanged-seed polls; timings include unsuccessful copies.
+    private var snapshotCount: UInt64 = 0
+    private var snapshotSumNs: UInt64 = 0
+    private var snapshotMaxNs: UInt64 = 0
+    private var snapshotOver16Ms: UInt64 = 0
+    private var snapshotFailures: UInt64 = 0
     private var pickCount: UInt64 = 0
     private var pickSumNs: UInt64 = 0
     private var pickMaxNs: UInt64 = 0
+    /// Counted by which path produced the frame, callback or idle deadline.
     private var screenFrameCount: UInt64 = 0
     private var idleFrameCount: UInt64 = 0
     private var captureLastEntryNs: UInt64 = 0
@@ -508,6 +514,11 @@ actor FrameCapture {
         (count: pickCount, sumNs: pickSumNs, maxNs: pickMaxNs)
     }
 
+    /// Elapsed snapshot time includes GPU surface fences, conversion, allocation and fallback.
+    func snapshotTimings() -> (count: UInt64, sumNs: UInt64, maxNs: UInt64, over16Ms: UInt64, failures: UInt64) {
+        (snapshotCount, snapshotSumNs, snapshotMaxNs, snapshotOver16Ms, snapshotFailures)
+    }
+
     func frameCounts() -> (screen: UInt64, idle: UInt64) {
         (screen: screenFrameCount, idle: idleFrameCount)
     }
@@ -567,7 +578,17 @@ actor FrameCapture {
         // the receiver jitter buffer. Host time is monotonic and reflects the
         // actual capture cadence.
         let timestamp = CMClockGetTime(CMClockGetHostTimeClock())
-        guard let copy = photocopier.copy(pb, maxDimension: snapshotMaxDimension) else { return }
+        let snapshotStart = DispatchTime.now().uptimeNanoseconds
+        let copied = photocopier.copy(pb, maxDimension: snapshotMaxDimension)
+        let snapshotNs = DispatchTime.now().uptimeNanoseconds - snapshotStart
+        snapshotCount &+= 1
+        snapshotSumNs &+= snapshotNs
+        snapshotMaxNs = max(snapshotMaxNs, snapshotNs)
+        if snapshotNs > 16_666_667 { snapshotOver16Ms &+= 1 }
+        guard let copy = copied else {
+            snapshotFailures &+= 1
+            return
+        }
         lastSeeds[key] = seed
         lastCaptureTime = .now
         capturedDisplay = display

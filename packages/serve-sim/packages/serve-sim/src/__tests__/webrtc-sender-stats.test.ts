@@ -157,6 +157,11 @@ describe("capture counts", () => {
       pickCount: null,
       pickSumMs: null,
       pickMaxMs: null,
+      snapshotCount: null,
+      snapshotSumMs: null,
+      snapshotMaxMs: null,
+      snapshotOver16Ms: null,
+      snapshotFailures: null,
       screenFrames: 900,
       idleFrames: 40,
       offeredFrames: null,
@@ -342,4 +347,13 @@ describe("senderSessionForViewer", () => {
     expect(senderSessionForViewer(sessions, ours.sessionId)?.codec).toBe("H264");
     expect(senderSessionForViewer(sessions, "33333333-3333-4333-8333-333333333333")).toBeNull();
   });
+});
+
+test("normalizes snapshot timings and preserves absent counters as unknown", () => {
+  const capture = readSenderStats({ sessions: [], capture: { screenFrames: 1, idleFrames: 0,
+    snapshotCount: 2, snapshotSumMs: 4, snapshotMaxMs: 3, snapshotOver16Ms: 0, snapshotFailures: 0,
+  } }).capture;
+  expect(capture).toMatchObject({ snapshotCount: 2, snapshotSumMs: 4,
+    snapshotMaxMs: 3, snapshotOver16Ms: 0, snapshotFailures: 0 });
+  expect(readSenderStats({ sessions: [], capture: { screenFrames: 0, idleFrames: 0 } }).capture?.snapshotCount).toBeNull();
 });

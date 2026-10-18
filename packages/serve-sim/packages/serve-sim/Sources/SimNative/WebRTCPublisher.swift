@@ -81,6 +81,11 @@ struct WebRTCCaptureCounts: Codable {
     let pickCount: UInt64
     let pickSumMs: Double
     let pickMaxMs: Double
+    let snapshotCount: UInt64
+    let snapshotSumMs: Double
+    let snapshotMaxMs: Double
+    let snapshotOver16Ms: UInt64
+    let snapshotFailures: UInt64
     let screenFrames: UInt64
     let idleFrames: UInt64
     /// Offered frames are capture deliveries, including the 5 FPS idle refresh. Forwarded frames
@@ -316,8 +321,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             // Keep the paravirtualized fixed-panel experiment deterministic:
             // otherwise one early dropped frame silently chooses default rate control.
             lowLatencyRateControl: !(fixedPanel
-                && Self.detectedH264Support.encoderID?.hasPrefix("paravirtualized:") == true),
-            queuedCapacity: fixedPanel ? 2 : 1
+                && Self.detectedH264Support.encoderID?.hasPrefix("paravirtualized:") == true)
         )
         sharedEncoderFactory = encoderFactory
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()

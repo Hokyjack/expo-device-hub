@@ -37,6 +37,12 @@ export interface CaptureCounts {
   pickCount: number | null;
   pickSumMs: number | null;
   pickMaxMs: number | null;
+  /** Snapshot wall time includes surface fences and pixel transfer, not just GPU compute. */
+  snapshotCount?: number | null;
+  snapshotSumMs?: number | null;
+  snapshotMaxMs?: number | null;
+  snapshotOver16Ms?: number | null;
+  snapshotFailures?: number | null;
   screenFrames: number;
   idleFrames: number;
   offeredFrames: number | null;
@@ -248,6 +254,11 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     pickSumMs: maybeNumber(raw.pickSumMs),
     ...(typeof raw.rebooting === "boolean" ? { rebooting: raw.rebooting } : {}),
     pickMaxMs: maybeNumber(raw.pickMaxMs),
+    snapshotCount: maybeNumber(raw.snapshotCount),
+    snapshotSumMs: maybeNumber(raw.snapshotSumMs),
+    snapshotMaxMs: maybeNumber(raw.snapshotMaxMs),
+    snapshotOver16Ms: maybeNumber(raw.snapshotOver16Ms),
+    snapshotFailures: maybeNumber(raw.snapshotFailures),
     screenFrames,
     idleFrames,
     offeredFrames: maybeNumber(raw.offeredFrames),

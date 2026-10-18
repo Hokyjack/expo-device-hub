@@ -239,6 +239,24 @@ final class FrameCaptureSurfaceTests: XCTestCase {
         await capture.stop()
     }
 
+    func testSnapshotTimingsExcludeUnchangedSeedAttempts() async throws {
+        let descriptor = FakeFramebufferDescriptor(surface(width: 64, height: 128, gray: 0))
+        let (capture, _) = await capture(with: descriptor)
+        await capture.captureFrameForTesting(force: false)
+        for _ in 0..<5 { await capture.captureFrameForTesting(force: false) }
+        let once = await capture.snapshotTimings()
+        XCTAssertEqual(once.count, 1)
+        XCTAssertEqual(once.failures, 0)
+        XCTAssertGreaterThan(once.sumNs, 0)
+        XCTAssertLessThanOrEqual(once.maxNs, once.sumNs)
+        await capture.captureFrameForTesting(force: true)
+        let twice = await capture.snapshotTimings()
+        XCTAssertEqual(twice.count, 2)
+        XCTAssertGreaterThanOrEqual(twice.sumNs, once.sumNs)
+        XCTAssertLessThanOrEqual(twice.over16Ms, twice.count)
+        await capture.stop()
+    }
+
     func testSurfaceSwappedWithoutCallbackReachesTheStreamAtTheNextRepick() async throws {
         let dark = surface(width: 64, height: 128, gray: 0)
         let light = surface(width: 64, height: 128, gray: 255)
