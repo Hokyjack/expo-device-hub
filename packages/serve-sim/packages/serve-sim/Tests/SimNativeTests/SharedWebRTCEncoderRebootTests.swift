@@ -62,6 +62,39 @@ private final class ControlledRebootEncode: @unchecked Sendable {
 }
 
 final class SharedWebRTCEncoderRebootTests: XCTestCase {
+    func testFlowCountersDistinguishCoalescingFromEncodeFailure() throws {
+        let firstStarted = expectation(description: "first encode")
+        let latestStarted = expectation(description: "latest queued encode")
+        let control = ControlledRebootEncode(started: [firstStarted, latestStarted])
+        let factory = SharedWebRTCEncoderFactory(bitrate: 1_000_000, fps: 60, h264Allowed: { true },
+                                                encodeFrame: { buffer, forceIDR, _, _ in
+                                                    await control.encode(buffer, forceIDR: forceIDR)
+                                                })
+        defer { factory.stop(); control.cancel() }
+        let sender = try proxy(factory)
+        let deliveries = expectation(description: "two deliveries")
+        deliveries.expectedFulfillmentCount = 2
+        sender.setCallback { _, _ in deliveries.fulfill(); return true }
+        XCTAssertEqual(sender.encode(try frame(1, marker: 1, factory: factory), codecSpecificInfo: nil, frameTypes: []), 0)
+        wait(for: [firstStarted], timeout: 2)
+        for marker: UInt8 in [2, 3, 4] {
+            XCTAssertEqual(sender.encode(try frame(Int64(marker), marker: marker, factory: factory), codecSpecificInfo: nil, frameTypes: []), 0)
+        }
+        XCTAssertEqual(factory.flowStats().submitted, 1)
+        XCTAssertEqual(factory.flowStats().coalesced, 2)
+        control.finish(0)
+        wait(for: [latestStarted], timeout: 2)
+        XCTAssertEqual(control.snapshot().map(\.marker), [1, 4])
+        control.finish(1)
+        wait(for: [deliveries], timeout: 2)
+        let flow = factory.flowStats()
+        XCTAssertEqual(flow.submitted, 2)
+        XCTAssertEqual(flow.completed, 2)
+        XCTAssertEqual(flow.failed, 0)
+        XCTAssertGreaterThan(flow.encodeSumMs, 0)
+        XCTAssertGreaterThan(flow.queueWaitSumMs, 0)
+    }
+
     private func frame(_ timestampMs: Int64, marker: UInt8, factory: SharedWebRTCEncoderFactory,
                        accepted: Bool = true) throws -> LKRTCVideoFrame {
         var buffer: CVPixelBuffer?
