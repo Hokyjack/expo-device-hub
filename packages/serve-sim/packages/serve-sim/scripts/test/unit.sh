@@ -17,6 +17,8 @@ ROOT="$(cd "$HERE/../../../.." && pwd)"
 STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/serve-sim-test.XXXXXX")"
 trap 'rm -rf "$STATE_DIR"' EXIT
 export SERVE_SIM_STATE_DIR="$STATE_DIR"
+# Unit subprocesses must never tune the machine running the tests.
+export SERVE_SIM_VM_PROFILE=0
 mkdir "$STATE_DIR/tmp"
 export TMPDIR="$STATE_DIR/tmp"
 # The capture CA normally lives in the user's Application Support folder; tests keep their own.

@@ -566,3 +566,18 @@ See [NOTICE](NOTICE) for attribution details.
 ## License
 
 Apache-2.0
+
+### Experimental VM tuning
+
+This test stack defaults `--vm-profile` on inside a detected macOS VM. It stops
+XProtect's scan launchers/plugins and the target Simulator's APS/intelligence
+services before app launch. Host changes require passwordless `sudo`; physical
+Macs are skipped. This suppresses malware scanning in the VM and is intended for
+disposable CI guests. SIP is not changed; failures stop startup and roll back new
+changes rather than claiming that protection was suppressed.
+
+Use `--no-vm-profile` (or `SERVE_SIM_VM_PROFILE=0`) to skip tuning. Changes persist
+for the VM lifetime, including after serve-sim exits; `serve-sim vm-profile off`
+restores the saved settings. Apply the flag to each created/cloned device because
+Simulator cloning resets service overrides. This feature does not fix the
+backboardd/IOSurface fault storm or establish a performance gain.

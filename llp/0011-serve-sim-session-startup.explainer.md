@@ -167,3 +167,22 @@ devices it armed; another live session's insert remains owned by that session.
 Stopping the host does not uninstall the app or shut down the simulator
 [observed: `src/index.ts` startup
 signal handlers and `disarmDevicesArmedHere`; `src/launch-manager.ts` `releaseSession`].
+
+## VM profile
+
+The experimental `--vm-profile` flag defaults on in the VM profiling test stack;
+`--no-vm-profile` or `SERVE_SIM_VM_PROFILE=0` opts out. Only a host reporting
+`kern.hv_vmm_present=1` is eligible. After boot readiness and before app startup,
+it disables the VM's XProtect scan/plugin launch services and the target Simulator's
+APS and intelligence task services [observed: `src/vm-profile.ts`, `src/index.ts`].
+The flag propagates to stream helpers, including helpers for newly created/cloned
+devices. Each clone needs its own overrides [observed: controlled Xcode 27.1
+reboot/clone benchmark, 2026-10-18].
+
+This is VM-lifetime tuning, not a session capability. Settings remain changed when
+serve-sim exits. `serve-sim vm-profile off` restores saved service settings; opting
+out only skips tuning. State is serialized per VM user and original settings survive
+repeated starts. A failed application rolls back newly acquired changes and reports
+any restore still needed. Physical hosts are skipped before elevation. This does
+not change SIP or promise that protected services are controllable on every image
+[observed: `src/vm-profile.ts`].

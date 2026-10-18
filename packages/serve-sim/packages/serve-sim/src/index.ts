@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { configureVmProfile } from "./vm-profile";
 import { RECORDING_FINALIZATION_WAIT_MS, RECORDING_RECONCILIATION_WAIT_MS } from "./recording-timeouts";
 import { captureRuntime } from "./capture/runtime";
 import { rebootedWithCaptureSince } from "./capture/reboot";
@@ -2005,6 +2006,8 @@ program
       "it whenever the server is reachable from the network: the same token gates the route that runs " +
       "shell commands.",
   )
+  .option("--vm-profile", "Experimental VM-only tuning: stop XProtect scans, APS and intelligence tasks (default on for this test stack)", process.env.SERVE_SIM_VM_PROFILE !== "0")
+  .option("--no-vm-profile", "Skip VM tuning; restore previous changes with serve-sim vm-profile off")
   .option("--detach", "Spawn helper and exit (daemon mode)")
   .option("-q, --quiet", "Suppress human-readable output, JSON only")
   .option("--no-preview", "Skip the web preview server; stream in foreground only")
@@ -2322,6 +2325,7 @@ Examples:
       process.exit(1);
     }
     const isStreamHelper = process.env[STREAM_HELPER_ENV] === "1";
+    process.env.SERVE_SIM_VM_PROFILE = opts.vmProfile ? "1" : "0";
 
     const startPort: number | undefined = opts.port;
     const streamOptionsProvided = wasProvided("transport")
@@ -2432,6 +2436,10 @@ Examples:
         }
         for (const udid of targets) {
           await ensureBooted(udid);
+          if (opts.vmProfile) {
+            // @ref LLP 0011#vm-profile — VM-lifetime tuning precedes app startup; clones need their own overrides.
+            console.error(`[vm-profile] ${JSON.stringify(configureVmProfile(true, [udid]))}`);
+          }
           if (sessionStopping) return;
         }
         if (!isStreamHelper) {
@@ -2678,6 +2686,14 @@ async function recordVideo(udid: string, output: string): Promise<void> {
     process.off("SIGTERM", onSignal);
   }
 }
+
+program
+  .command("vm-profile <mode>")
+  .description("Experimental VM tuning; off restores the saved service settings")
+  .action((mode: string) => {
+    if (mode !== "off") throw new Error("Use vm-profile off; enable tuning by starting a session");
+    console.log(JSON.stringify(configureVmProfile(false, [])));
+  });
 
 program
   .command("record-video")
