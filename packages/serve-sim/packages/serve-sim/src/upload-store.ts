@@ -52,7 +52,8 @@ function isRunning(pid: number): boolean {
  * Removes the folders of servers that exited and every upload past its age, in any server's folder,
  * then reports the bytes all servers still hold. Deleting is safe across servers: a copy that already
  * opened its source keeps reading the unlinked file, and a later open fails instead of mixing bytes.
- * Private snapshots belong to live install tasks until finally cleans them, even past the upload age.
+ * Private snapshots are exempt from upload age until their action deadline; PID reuse cannot
+ * preserve an abandoned snapshot indefinitely. Completed tasks remove their copies in finally.
  */
 async function pruneStagingAsync(): Promise<number> {
   let entries: string[];
@@ -73,7 +74,11 @@ async function pruneStagingAsync(): Promise<number> {
     held += await pruneStaleEntriesAsync(
       full,
       MAX_UPLOAD_AGE_MS,
-      (entry) => !entry.startsWith(SNAPSHOT_PREFIX),
+      (entry) => {
+        if (!entry.startsWith(SNAPSHOT_PREFIX)) return true;
+        const deadline = Number(entry.slice(SNAPSHOT_PREFIX.length).split("-")[0]);
+        return !Number.isFinite(deadline) || deadline <= Date.now();
+      },
     );
   }
   // Files that earlier versions staged directly in the root.
@@ -143,7 +148,7 @@ export async function withStagedUploadSnapshotAsync<T>(
     snapshotBytes += size;
     let directory: string | undefined;
     try {
-      directory = await mkdtemp(join(UPLOAD_DIR, SNAPSHOT_PREFIX));
+      directory = await mkdtemp(join(UPLOAD_DIR, `${SNAPSHOT_PREFIX}${deadline}-`));
       const path = join(directory, info.isDirectory() ? "source.app" : "source");
       const copied = await runInvocation({
         file: "cp",
