@@ -154,6 +154,13 @@ floor remains 5 fps. This does not change the publisher's configured output rate
 [observed: `Sources/SimNative/FrameCapture.swift`, `startSurfacePoller()`;
 `Sources/StreamingPolicy/WebRTCFrameRatePolicy.swift`]
 
+The experimental fixed-panel path requests default rate control when the H.264
+probe identifies a paravirtualized encoder. Other paths retain the low-latency
+request and its existing fallback. `sharedCanvas.rateControlMode` reports the
+request after any fallback, separately from the fallback count. [observed:
+`Sources/SimNative/WebRTCPublisher.swift`, initializer;
+`Sources/SimNative/SharedWebRTCEncoder.swift`, `rateControlMode()`]
+
 `/webrtc/stats` also exposes cumulative `sharedEncoderFlow` counters: submitted,
 coalesced pending frames, completed encodes and failed encode/conversion results, plus wall-clock milliseconds
 spent waiting in the latest-frame slot, dispatching the encode task, awaiting the

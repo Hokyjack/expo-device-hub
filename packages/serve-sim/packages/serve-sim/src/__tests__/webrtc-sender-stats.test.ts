@@ -283,6 +283,7 @@ describe("viewer resize and shared canvas", () => {
     expect(stats.viewerResize).toEqual({ backend: "metal", submitted: 60, passedThrough: 60, scaled: 0 });
     expect(stats.sharedCanvas).toEqual({
       width: 640, height: 1392, scale: 1, step: 0, steps: 0, starvedRecoveries: null, lowLatencyFallbacks: null,
+      rateControlMode: null,
     });
   });
 
@@ -293,6 +294,15 @@ describe("viewer resize and shared canvas", () => {
     });
     expect(stats.sharedCanvas?.starvedRecoveries).toBe(2);
     expect(stats.sharedCanvas?.lowLatencyFallbacks).toBe(1);
+  });
+
+  test("reports explicit default rate control without inventing a fallback", () => {
+    const stats = readSenderStats({ sessions: [], sharedCanvas: {
+      width: 640, height: 1392, scale: 1, step: 0, steps: 0,
+      lowLatencyFallbacks: 0, rateControlMode: "default",
+    } });
+    expect(stats.sharedCanvas?.rateControlMode).toBe("default");
+    expect(stats.sharedCanvas?.lowLatencyFallbacks).toBe(0);
   });
 
   test("reports null for an absent or malformed shared canvas", () => {

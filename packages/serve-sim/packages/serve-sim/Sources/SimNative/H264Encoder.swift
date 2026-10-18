@@ -32,7 +32,7 @@ actor H264Encoder {
     private var bitrate: Int
     private var emittedDescription = false
     private var frameCount: Int64 = 0
-    private var lowLatencyEnabled = true
+    private var lowLatencyEnabled: Bool
     /// Times the encoder fell back from low-latency to default rate control. Nothing turns
     /// low-latency rate control back on, so it is 0 or 1 for one encoder.
     private(set) var lowLatencyFallbacks: UInt64 = 0
@@ -55,11 +55,13 @@ actor H264Encoder {
     }
 
     init(fps: Int = 60, bitrate: Int = 6_000_000,
-         constrainedBaseline: Bool = false, dynamicBitrate: Bool = false) {
+         constrainedBaseline: Bool = false, dynamicBitrate: Bool = false,
+         lowLatencyRateControl: Bool = true) {
         self.fps = Int32(max(1, fps))
         self.bitrate = max(1, bitrate)
         self.constrainedBaseline = constrainedBaseline
         self.dynamicBitrate = dynamicBitrate
+        self.lowLatencyEnabled = lowLatencyRateControl
     }
 
     deinit {

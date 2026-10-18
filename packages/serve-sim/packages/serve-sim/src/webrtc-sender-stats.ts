@@ -95,6 +95,7 @@ export interface SharedCanvas {
   starvedRecoveries?: number | null;
   /** Times the shared encoder fell back from low-latency to default rate control. */
   lowLatencyFallbacks?: number | null;
+  rateControlMode?: "low-latency" | "default" | null;
 }
 
 export interface SenderStats {
@@ -226,6 +227,8 @@ function readSharedCanvas(raw: unknown): SharedCanvas | null {
     width: width as number, height: height as number, scale: scale as number, step: step as number, steps: steps as number,
     starvedRecoveries: maybeNumber(raw.starvedRecoveries),
     lowLatencyFallbacks: maybeNumber(raw.lowLatencyFallbacks),
+    rateControlMode: raw.rateControlMode === "low-latency" || raw.rateControlMode === "default"
+      ? raw.rateControlMode : null,
   };
 }
 

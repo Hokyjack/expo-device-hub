@@ -143,6 +143,7 @@ struct WebRTCSharedCanvas: Codable {
     let starvedRecoveries: UInt64
     /// Times the shared encoder fell back from low-latency to default rate control.
     let lowLatencyFallbacks: UInt64
+    let rateControlMode: String
 }
 
 struct WebRTCSenderStatsReport: Codable {
@@ -311,7 +312,11 @@ final class WebRTCPublisher: @unchecked Sendable {
         )
         let encoderFactory = SharedWebRTCEncoderFactory(
             bitrate: targetBitrate, fps: normalizedMaxFps,
-            h264Allowed: { Self.detectedH264Support.allowed }
+            h264Allowed: { Self.detectedH264Support.allowed },
+            // Keep the paravirtualized fixed-panel experiment deterministic:
+            // otherwise one early dropped frame silently chooses default rate control.
+            lowLatencyRateControl: !(fixedPanel
+                && Self.detectedH264Support.encoderID?.hasPrefix("paravirtualized:") == true)
         )
         sharedEncoderFactory = encoderFactory
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
@@ -660,7 +665,8 @@ final class WebRTCPublisher: @unchecked Sendable {
         return WebRTCSharedCanvas(width: canvas.width, height: canvas.height,
                                   scale: resolution.scale, step: resolution.step, steps: resolution.changes,
                                   starvedRecoveries: sharedEncoderFactory.starvedRecoveries(),
-                                  lowLatencyFallbacks: sharedEncoderFactory.lowLatencyFallbacks())
+                                  lowLatencyFallbacks: sharedEncoderFactory.lowLatencyFallbacks(),
+                                  rateControlMode: sharedEncoderFactory.rateControlMode())
     }
 
     /// The observer runs on the publisher queue with the current canvas, then on each change.
