@@ -316,7 +316,8 @@ final class WebRTCPublisher: @unchecked Sendable {
             // Keep the paravirtualized fixed-panel experiment deterministic:
             // otherwise one early dropped frame silently chooses default rate control.
             lowLatencyRateControl: !(fixedPanel
-                && Self.detectedH264Support.encoderID?.hasPrefix("paravirtualized:") == true)
+                && Self.detectedH264Support.encoderID?.hasPrefix("paravirtualized:") == true),
+            queuedCapacity: fixedPanel ? 2 : 1
         )
         sharedEncoderFactory = encoderFactory
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()

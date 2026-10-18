@@ -165,6 +165,24 @@ final class SharedH264PolicyTests: XCTestCase {
         XCTAssertEqual(backlog.submit(5), .start)
     }
 
+    func testTwoWaitingFramesAbsorbOneBurstAndRemainBounded() {
+        var backlog = SharedFrameBacklog(queuedCapacity: 2)
+        XCTAssertEqual(backlog.submit(1), .start)
+        XCTAssertEqual(backlog.submit(2), .queued(replaced: nil))
+        XCTAssertEqual(backlog.submit(3), .queued(replaced: nil))
+        XCTAssertEqual(backlog.complete(1), 2)
+        XCTAssertEqual(backlog.complete(2), 3)
+        XCTAssertNil(backlog.complete(3))
+        XCTAssertEqual(backlog.submit(4), .start)
+        XCTAssertEqual(backlog.submit(5), .queued(replaced: nil))
+        XCTAssertEqual(backlog.submit(6), .queued(replaced: nil))
+        XCTAssertEqual(backlog.submit(7), .queued(replaced: 5))
+        XCTAssertEqual(backlog.complete(4), 6)
+        backlog.discardQueued()
+        XCTAssertNil(backlog.complete(6))
+        XCTAssertEqual(backlog.submit(7), .stale)
+    }
+
     func testFailedEncodeCanDropWaitingFrameAndRecover() {
         var backlog = SharedFrameBacklog()
         XCTAssertEqual(backlog.submit(10), .start)

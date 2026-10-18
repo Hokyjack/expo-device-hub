@@ -42,9 +42,9 @@ final class SharedWebRTCEncoderFactory: NSObject, LKRTCVideoEncoderFactory {
     private let h264Allowed: () -> Bool
 
     init(bitrate: Int, fps: Int, h264Allowed: @escaping () -> Bool,
-         lowLatencyRateControl: Bool = true, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
+         lowLatencyRateControl: Bool = true, queuedCapacity: Int = 1, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
         shared = SharedWebRTCEncoder(bitrate: bitrate, fps: fps,
-                                     lowLatencyRateControl: lowLatencyRateControl, encodeFrame: encodeFrame)
+                                     lowLatencyRateControl: lowLatencyRateControl, queuedCapacity: queuedCapacity, encodeFrame: encodeFrame)
         self.h264Allowed = h264Allowed
     }
 
@@ -157,8 +157,8 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     private var lastEncodedTimestamp: Int64?
     private var lastDeliveredTimestamp: [Int: Int64] = [:]
     private var nextPeer = 0
-    private var backlog = SharedFrameBacklog()
-    private var queuedFrame: QueuedFrame?
+    private var backlog: SharedFrameBacklog
+    private var queuedFrames: [QueuedFrame] = []
     private var captureSuspended = false
     private var captureEpoch: UInt64 = 0
     private static let captureEpochKey = "expo.serve-sim.webrtc.captureEpoch" as CFString
@@ -178,8 +178,9 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         peers[peer] = value
     }
 
-    init(bitrate: Int, fps: Int, lowLatencyRateControl: Bool, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
+    init(bitrate: Int, fps: Int, lowLatencyRateControl: Bool, queuedCapacity: Int, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
         self.fps = fps
+        backlog = SharedFrameBacklog(queuedCapacity: queuedCapacity)
         self.lowLatencyRateControl = lowLatencyRateControl
         encoder = H264Encoder(fps: fps, bitrate: bitrate,
                               constrainedBaseline: true, dynamicBitrate: true,
@@ -226,7 +227,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         onQueue {
             captureSuspended = true
             captureEpoch &+= 1
-            queuedFrame = nil
+            queuedFrames.removeAll()
             backlog.discardQueued()
             pending.removeAll()
             completed.removeAll()
@@ -335,7 +336,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         onQueue {
             callbacks.removeAll()
             packetizationModes.removeAll()
-            queuedFrame = nil
+            queuedFrames.removeAll()
             backlog.stop()
             pending.removeAll()
             completed.removeAll()
@@ -348,7 +349,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
 
     private func discardUnusedFrames() {
         guard callbacks.isEmpty else { return }
-        queuedFrame = nil
+        queuedFrames.removeAll()
         backlog.discardQueued()
         pending.removeAll()
     }
@@ -391,7 +392,10 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
                 pending[timestamp]?.peers.insert(peer)
                 return 0
             }
-            if queuedFrame?.forceIDR == true { policy.requestIDR() }
+            if let replaced = backlog.replacementTimestamp,
+               queuedFrames.first(where: { $0.timestamp == replaced })?.forceIDR == true {
+                policy.requestIDR()
+            }
             guard let forceIDR = policy.beginFrame(timestamp: timestamp, requestedIDR: requestedIDR) else {
                 // Older than the newest frame and out of the cache: this peer lags behind the
                 // others. Without help it would never get a frame again. The next keyframe is
@@ -420,8 +424,9 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
                 if let replaced {
                     flow.coalesced &+= 1
                     pending.removeValue(forKey: replaced)
+                    queuedFrames.removeAll { $0.timestamp == replaced }
                 }
-                queuedFrame = next
+                queuedFrames.append(next)
             case .stale:
                 break
             }
@@ -462,8 +467,8 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         guard backlog.encodingTimestamp == timestamp else { return }
         let nextTimestamp = backlog.complete(timestamp)
         defer {
-            if let next = queuedFrame, next.timestamp == nextTimestamp {
-                queuedFrame = nil
+            if let next = queuedFrames.first, next.timestamp == nextTimestamp {
+                queuedFrames.removeFirst()
                 startEncoding(next)
             }
         }
@@ -475,8 +480,8 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
             // A nil encoder result was counted at completion; conversion can also reject a result.
             if output != nil { flow.failed &+= 1 }
             policy.requestIDR()
-            if let queuedFrame {
-                self.queuedFrame = QueuedFrame(
+            if let queuedFrame = queuedFrames.first {
+                queuedFrames[0] = QueuedFrame(
                     timestamp: queuedFrame.timestamp, buffer: queuedFrame.buffer,
                     forceIDR: true, bitrate: queuedFrame.bitrate, queuedNs: queuedFrame.queuedNs
                 )

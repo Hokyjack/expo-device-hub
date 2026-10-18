@@ -111,10 +111,16 @@ public struct SharedFrameBacklog {
     }
 
     public private(set) var encodingTimestamp: Int64?
-    public private(set) var queuedTimestamp: Int64?
+    private var waiting: [Int64] = []
+    public var queuedTimestamp: Int64? { waiting.first }
+    public var replacementTimestamp: Int64? { waiting.count == queuedCapacity ? waiting.first : nil }
     private var newestTimestamp = Int64.min
+    private let queuedCapacity: Int
 
-    public init() {}
+    /// Two waiting frames absorb one burst; overload still retains only the newest bounded set.
+    public init(queuedCapacity: Int = 1) {
+        self.queuedCapacity = max(1, min(2, queuedCapacity))
+    }
 
     public mutating func submit(_ timestamp: Int64) -> Submission {
         guard timestamp > newestTimestamp else { return .stale }
@@ -123,25 +129,24 @@ public struct SharedFrameBacklog {
             encodingTimestamp = timestamp
             return .start
         }
-        let replaced = queuedTimestamp
-        queuedTimestamp = timestamp
+        let replaced = waiting.count == queuedCapacity ? waiting.removeFirst() : nil
+        waiting.append(timestamp)
         return .queued(replaced: replaced)
     }
 
     public mutating func complete(_ timestamp: Int64) -> Int64? {
         guard encodingTimestamp == timestamp else { return nil }
-        encodingTimestamp = queuedTimestamp
-        queuedTimestamp = nil
+        encodingTimestamp = waiting.isEmpty ? nil : waiting.removeFirst()
         return encodingTimestamp
     }
 
     public mutating func discardQueued() {
-        queuedTimestamp = nil
+        waiting.removeAll()
     }
 
     public mutating func stop() {
         encodingTimestamp = nil
-        queuedTimestamp = nil
+        waiting.removeAll()
     }
 }
 
