@@ -1359,7 +1359,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             guard !session.isConnected else { return }
             session.isConnected = true
             self.refreshFrameAcceptance()
-            self.requestIDR()
+            if self.fixedPanel { self.requestIDR() }
             self.applySenderParameters(to: session)
             streamLog("[webrtc] Peer connected; activePeers=\(self.sessions.values.filter(\.isConnected).count)")
         }
