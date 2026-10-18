@@ -47,6 +47,12 @@ phases. OS stalls can exceed requested probe timeouts. Process polling misses
 tasks that exit between samples; residual CPU remains unattributed. Record the
 artifact hash, actual CPU/RAM, app versions and phase timestamps with each run.
 
+Hosted previews expose `profile.capture` through their authenticated action channel:
+`{action: "profile.capture", params: {seconds: 15}}` returns guest NDJSON in `stdout`.
+It is VM-only, accepts 1–30 seconds, allows one capture at a time, and caps the
+response at 16 MiB. The server owns and cleans the temporary file. This exposes
+process executable paths and guest counters to the preview token holder.
+
 ## Log scopes
 
 `/logs` (or the middleware's `/.sim/logs`) keeps its all-process default.
