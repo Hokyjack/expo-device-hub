@@ -581,3 +581,8 @@ for the VM lifetime, including after serve-sim exits; `serve-sim vm-profile off`
 restores the saved settings. Apply the flag to each created/cloned device because
 Simulator cloning resets service overrides. This feature does not fix the
 backboardd/IOSurface fault storm or establish a performance gain.
+
+On SIP-protected images, a rejected XProtect shutdown restores host policies and
+reports `xprotectBlocked`; Simulator APS/intelligence tuning continues. XProtect
+remains active. Other failures still roll back and fail startup. This does not
+change SIP [observed: `src/vm-profile.ts`; hosted tip run, 2026-10-18].

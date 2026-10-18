@@ -117,8 +117,9 @@ export function configureVmProfile(enabled: boolean, devices: string[], deps: Vm
     }
     const added: string[] = [];
     try {
-      for (const t of targets.filter((t) => !t.device || devices.includes(t.device))) {
-        if (!present(t.plist)) continue;
+      let xprotectBlocked: string | undefined;
+      const apply = (t: Target) => {
+        if (!present(t.plist)) return;
         if (!state[t.id]) {
           state[t.id] = { disabled: disabled(t), loaded: loaded(t) };
           save(state); added.push(t.id);
@@ -127,11 +128,24 @@ export function configureVmProfile(enabled: boolean, devices: string[], deps: Vm
         if (loaded(t)) ctl(t, "bootout", `${t.domain}/${t.label}`);
         if (!disabled(t) || loaded(t)) throw new Error(`VM profile did not stop ${t.id}`);
         changed.push(t.id);
+      };
+      try {
+        for (const t of targets.filter((t) => !t.device)) apply(t);
+        // Stopping a launcher is insufficient if scanner children are still running.
+        const scanners = run("/bin/ps", ["-axo", "comm="]).split("\n").filter((s) => /^\/Library\/Apple\/System\/Library\/CoreServices\/XProtect\.app\/Contents\/(?:MacOS\/(?:XProtect|XProtectRemediator[^/]+)|XPCServices\/XProtectPluginService\.xpc\/Contents\/MacOS\/XProtectPluginService)$/.test(s.trim()));
+        if (scanners.length) throw new Error(`VM profile left active XProtect scanners: ${scanners.join(", ")}`);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes("System Integrity Protection is engaged")) throw error;
+        // SIP-protected hosted images retain XProtect. Undo host changes before tuning devices.
+        for (const id of [...added].reverse()) {
+          restore(byId.get(id)!, state[id]!);
+          added.splice(added.indexOf(id), 1);
+        }
+        changed.length = 0;
+        xprotectBlocked = "System Integrity Protection is engaged; XProtect remains enabled";
       }
-      // Stopping a launcher is insufficient if its scanner children are still running.
-      const scanners = run("/bin/ps", ["-axo", "comm="]).split("\n").filter((s) => /^\/Library\/Apple\/System\/Library\/CoreServices\/XProtect\.app\/Contents\/(?:MacOS\/(?:XProtect|XProtectRemediator[^/]+)|XPCServices\/XProtectPluginService\.xpc\/Contents\/MacOS\/XProtectPluginService)$/.test(s.trim()));
-      if (scanners.length) throw new Error(`VM profile left active XProtect scanners: ${scanners.join(", ")}`);
-      return { disabled: changed, restore: "serve-sim vm-profile off" };
+      for (const t of targets.filter((t) => t.device && devices.includes(t.device))) apply(t);
+      return { disabled: changed, ...(xprotectBlocked ? { xprotectBlocked } : {}), restore: "serve-sim vm-profile off" };
     } catch (error) {
       const failures: string[] = [];
       for (const id of added.reverse()) {

@@ -186,3 +186,8 @@ repeated starts. A failed application rolls back newly acquired changes and repo
 any restore still needed. Physical hosts are skipped before elevation. This does
 not change SIP or promise that protected services are controllable on every image
 [observed: `src/vm-profile.ts`].
+
+On SIP-protected images, a rejected XProtect shutdown restores host policies and
+reports `xprotectBlocked`; Simulator APS/intelligence tuning continues. XProtect
+remains active. Other failures still roll back and fail startup. This does not
+change SIP [observed: `src/vm-profile.ts`; hosted tip run, 2026-10-18].

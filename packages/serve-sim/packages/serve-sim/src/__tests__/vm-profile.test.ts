@@ -11,7 +11,7 @@ function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "vm-profile-")); dirs.push(directory);
   const states = new Map<string, { loaded: boolean; disabled: boolean }>();
   const calls: string[][] = [];
-  let physical = false, deny = "", scanners = "";
+  let physical = false, deny = "", denyAction = "disable", denyMessage = "protected service", scanners = "";
   const deps = {
     directory, uid: 501, exists: () => true,
     run(file: string, args: string[]) {
@@ -26,7 +26,7 @@ function fixture() {
       const get = (key: string) => { if (!states.has(key)) states.set(key, { loaded: true, disabled: false }); return states.get(key)!; };
       if (action === "print-disabled") return [...states.entries()].filter(([k, s]) => k.startsWith(`${target}/`) && s.disabled).map(([k]) => `"${k.slice(target.length + 1)}" => disabled`).join("\n");
       const state = get(key);
-      if (action === "disable" && target.includes(deny) && deny) throw Object.assign(new Error("protected service"), { status: 1 });
+      if (action === denyAction && target.includes(deny) && deny) throw Object.assign(new Error(denyMessage), { status: 1 });
       if (action === "print" && !state.loaded) throw Object.assign(new Error("absent"), { status: 113 });
       if (action === "disable") state.disabled = true;
       if (action === "enable") state.disabled = false;
@@ -35,7 +35,7 @@ function fixture() {
       return "";
     },
   };
-  return { deps, states, calls, physical: () => { physical = true; }, deny: (s: string) => { deny = s; }, scanners: (s: string) => { scanners = s; } };
+  return { deps, states, calls, physical: () => { physical = true; }, deny: (s: string, action = "disable", message = "protected service") => { deny = s; denyAction = action; denyMessage = message; }, scanners: (s: string) => { scanners = s; } };
 }
 
 test("default tuning never elevates or queries devices on a physical host", () => {
@@ -79,4 +79,18 @@ test("untrusted persisted labels cannot become privileged commands", () => {
   f.calls.length = 0;
   expect(() => configureVmProfile(false, [], f.deps)).toThrow("Invalid VM profile service state");
   expect(f.calls.some((c) => c[0]!.endsWith("sudo"))).toBe(false);
+});
+
+
+test("SIP refusal restores host policy and still tunes both Simulator services", () => {
+  const f = fixture();
+  f.deny("daemon.scan", "bootout", "Operation not permitted while System Integrity Protection is engaged");
+  f.scanners("/Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect");
+  const result = configureVmProfile(true, [ID], f.deps);
+  expect(result.xprotectBlocked).toContain("XProtect remains enabled");
+  expect(result.disabled).toHaveLength(2);
+  expect(f.states.get("system/com.apple.XProtect.daemon.scan")).toEqual({ loaded: true, disabled: false });
+  expect(f.states.get("user/foreground/com.apple.apsd")).toEqual({ loaded: false, disabled: true });
+  configureVmProfile(false, [], f.deps);
+  expect(f.states.get("user/foreground/com.apple.apsd")).toEqual({ loaded: true, disabled: false });
 });
