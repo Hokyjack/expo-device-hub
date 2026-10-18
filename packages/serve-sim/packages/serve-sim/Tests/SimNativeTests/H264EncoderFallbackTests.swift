@@ -15,6 +15,19 @@ final class H264EncoderFallbackTests: XCTestCase {
         XCTAssertEqual(fallbacks, 0)
     }
 
+    func testRuntimeIdentityExistsOnlyForAnActiveCompressionSession() async throws {
+        let encoder = H264Encoder(fps: 60, bitrate: 500_000, lowLatencyRateControl: false)
+        let before = await encoder.runtimeIdentity
+        XCTAssertNil(before)
+        _ = try await encoder.encode(frame())
+        let active = await encoder.runtimeIdentity
+        XCTAssertNotNil(active)
+        if let id = active?.id { XCTAssertFalse(id.isEmpty) }
+        await encoder.stop()
+        let after = await encoder.runtimeIdentity
+        XCTAssertNil(after)
+    }
+
     private let width = 320
     private let height = 640
 

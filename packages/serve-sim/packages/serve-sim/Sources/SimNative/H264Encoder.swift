@@ -3,6 +3,11 @@ import CoreVideo
 import CoreMedia
 import VideoToolbox
 
+struct H264RuntimeIdentity: Sendable {
+    let id: String?
+    let hardware: Bool?
+}
+
 /// Real-time H.264 encoder backed by `VTCompressionSession`, producing AVCC
 /// (length-prefixed NAL) output for the `/stream.avcc` endpoint.
 ///
@@ -26,6 +31,7 @@ actor H264Encoder {
     }
 
     private var session: VTCompressionSession?
+    private(set) var runtimeIdentity: H264RuntimeIdentity?
     private var width: Int32 = 0
     private var height: Int32 = 0
     private var fps: Int32
@@ -203,6 +209,7 @@ actor H264Encoder {
         if let session {
             VTCompressionSessionInvalidate(session)
             self.session = nil
+            runtimeIdentity = nil
         }
         emittedDescription = false
         streamDiagnosticLog("[stream:h264] settings updated fps=\(fps) bitrate=\(bitrate)")
@@ -212,15 +219,18 @@ actor H264Encoder {
         if let session {
             VTCompressionSessionInvalidate(session)
             self.session = nil
+            runtimeIdentity = nil
         }
     }
 
     // MARK: - private
 
     private func rebuildSession() {
+        runtimeIdentity = nil
         if let session {
             VTCompressionSessionInvalidate(session)
             self.session = nil
+            runtimeIdentity = nil
         }
 
         // Low-latency rate control puts VideoToolbox in its real-time/low-delay
@@ -289,6 +299,16 @@ actor H264Encoder {
             streamDiagnosticLog("[stream:h264] prepare failed with status \(prepareStatus)")
         }
         session = sess
+        var idValue: CFTypeRef?
+        var hardwareValue: CFTypeRef?
+        let idStatus = VTSessionCopyProperty(sess, key: kVTCompressionPropertyKey_EncoderID,
+                                             allocator: kCFAllocatorDefault, valueOut: &idValue)
+        let hardwareStatus = VTSessionCopyProperty(sess, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
+                                                   allocator: kCFAllocatorDefault, valueOut: &hardwareValue)
+        runtimeIdentity = H264RuntimeIdentity(
+            id: idStatus == noErr ? idValue as? String : nil,
+            hardware: hardwareStatus == noErr ? (hardwareValue as? NSNumber)?.boolValue : nil
+        )
         emittedDescription = false
     }
 

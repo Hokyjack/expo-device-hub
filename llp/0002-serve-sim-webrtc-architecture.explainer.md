@@ -161,6 +161,16 @@ request after any fallback, separately from the fallback count. [observed:
 `Sources/SimNative/WebRTCPublisher.swift`, initializer;
 `Sources/SimNative/SharedWebRTCEncoder.swift`, `rateControlMode()`]
 
+
+For live shared H.264, encoder identity switches from the startup capability probe
+(`probe: true`) to the real compression session's `EncoderID` and
+`UsingHardwareAcceleratedVideoEncoder` properties (`probe: false`) after an encode.
+Unsupported properties remain unknown. This identifies the actual encoding path;
+it does not measure physical host GPU utilization. [observed:
+`Sources/SimNative/H264Encoder.swift`, `rebuildSession()`;
+`Sources/SimNative/WebRTCPublisher.swift`, `encoderIdentity(liveCodecs:)`]
+
+
 `/webrtc/stats` also exposes cumulative `sharedEncoderFlow` counters: submitted,
 coalesced pending frames, completed encodes and failed encode/conversion results, plus wall-clock milliseconds
 spent waiting in the latest-frame slot, dispatching the encode task, awaiting the

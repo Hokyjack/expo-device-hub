@@ -114,6 +114,8 @@ final class SharedWebRTCEncoderFactory: NSObject, LKRTCVideoEncoderFactory {
 
     func rateControlMode() -> String { shared.rateControlMode() }
 
+    func liveIdentity() -> H264RuntimeIdentity? { shared.liveIdentity() }
+
     func stop() {
         shared.stop()
     }
@@ -165,6 +167,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     private var stopped = false
     private var encodedFrames: UInt64 = 0
     private var fallbacks: UInt64 = 0
+    private var liveEncoderIdentity: H264RuntimeIdentity?
     private var fps: Int
     private var resolution: SharedResolutionPolicy
     private var scaleObserver: ((Double) -> Void)?
@@ -281,6 +284,8 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         onQueue { lowLatencyRateControl && fallbacks == 0 ? "low-latency" : "default" }
     }
 
+    func liveIdentity() -> H264RuntimeIdentity? { onQueue { liveEncoderIdentity } }
+
     /// Queue-confined. Feeds the slowest peer's bitrate to the resolution policy.
     private func observeResolution() {
         let now = DispatchTime.now().uptimeNanoseconds
@@ -337,6 +342,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
             packetizationModes.removeAll()
             queuedFrame = nil
             backlog.stop()
+            liveEncoderIdentity = nil
             pending.removeAll()
             completed.removeAll()
             completedOrder.removeAll()
@@ -454,7 +460,12 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
             }
             // After delivery, so the frame does not wait for it. Reads can land out of order.
             let fallbacks = await encoder.lowLatencyFallbacks
-            queue.async { self.fallbacks = max(self.fallbacks, fallbacks) }
+            let identity = await encoder.runtimeIdentity
+            queue.async {
+                guard !self.stopped else { return }
+                self.fallbacks = max(self.fallbacks, fallbacks)
+                self.liveEncoderIdentity = identity
+            }
         }
     }
 

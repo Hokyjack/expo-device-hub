@@ -132,8 +132,8 @@ struct WebRTCEncoderIdentity: Codable {
     let hardware: Bool?
     /// One answer for the whole report, even when sessions disagree.
     let codec: String?
-    /// The H.264 answer comes from a test session, because the live encoder does not report
-    /// itself. The VP8 and VP9 answers follow from libwebrtc encoding them in software.
+    /// True only while using the startup probe; shared H.264 reports the actual VT session once
+    /// available. VP8 and VP9 follow from libwebrtc encoding them in software.
     let probe: Bool
 }
 
@@ -599,6 +599,10 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     func encoderIdentity(liveCodecs: [String]) -> WebRTCEncoderIdentity {
+        if let codec = StreamCodecPolicy.dominant(liveCodecs), StreamCodecPolicy.isH264(codec),
+           let live = sharedEncoderFactory.liveIdentity() {
+            return WebRTCEncoderIdentity(id: live.id, hardware: live.hardware, codec: codec, probe: false)
+        }
         let identity = WebRTCEncoderIdentityPolicy.identity(
             liveCodecs: liveCodecs,
             h264EncoderID: h264WebRTCSupport.encoderID,

@@ -81,11 +81,11 @@ export interface CaptureCounts {
 /// What is known about the encoder behind the live sessions. `hardware: false` means a CPU
 /// encoder, which otherwise looks identical to a healthy one.
 export interface EncoderIdentity {
-  /// The H.264 encoder this host would use. Null when the live session is not H.264.
+  /// Live VT EncoderID, or the startup probe until live metadata is available.
   id: string | null;
   hardware: boolean | null;
   codec: string | null;
-  /// A test encode on this host, not the live encoder, which does not report itself.
+  /// True for a startup capability probe; false for live VT metadata or a known software codec.
   probe: boolean;
 }
 
