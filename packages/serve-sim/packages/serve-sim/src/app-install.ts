@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Unpack } from "tar";
+import { isUnsupportedAppArchive, UNSUPPORTED_INSTALL_FORMAT } from "./app-install-format";
 import {
   actionTimeoutMs,
   createSerialQueue,
@@ -20,13 +21,15 @@ const MAX_ARCHIVE_DECOMPRESSION_RATIO = 2048;
 const installArchive = createSerialQueue();
 
 async function isArchive(path: string): Promise<boolean> {
+  if (isUnsupportedAppArchive(path)) throw new Error(UNSUPPORTED_INSTALL_FORMAT);
   if (/\.(?:tar\.gz|tgz)$/i.test(path)) return true;
   const file = await open(path, "r").catch(() => undefined);
   if (!file) return false; // Preserve simctl's diagnostics for an absent direct path.
   try {
     const magic = Buffer.alloc(2);
     await file.read(magic, 0, 2, 0);
-    return magic[0] === 0x1f && magic[1] === 0x8b;
+    if (magic[0] === 0x1f && magic[1] === 0x8b) return true;
+    throw new Error(UNSUPPORTED_INSTALL_FORMAT);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EISDIR") return false;
     throw error;

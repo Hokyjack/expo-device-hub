@@ -14,7 +14,7 @@ beforeAll(async () => {
   root = await mkdtemp(join(UPLOAD_DIR, "install-test-"));
   shims = installShims({
     xcrun:
-      '#!/bin/sh\nprintf "%s\\n" "$3"\n[ -z "$SERVE_SIM_INSTALL_SLEEP" ] || sleep "$SERVE_SIM_INSTALL_SLEEP"\ncat "$4/Info.plist"\nprintf "\\n%s\\n" "$4"\n[ -x "$4/App" ] || exit 9\nexit "${SERVE_SIM_INSTALL_EXIT:-0}"\n',
+      '#!/bin/sh\n[ -z "$SERVE_SIM_INSTALL_STARTED" ] || touch "$SERVE_SIM_INSTALL_STARTED"\nprintf "%s\\n" "$3"\n[ -z "$SERVE_SIM_INSTALL_SLEEP" ] || sleep "$SERVE_SIM_INSTALL_SLEEP"\ncat "$4/Info.plist"\nprintf "\\n%s\\n" "$4"\n[ -x "$4/App" ] || exit 9\nexit "${SERVE_SIM_INSTALL_EXIT:-0}"\n',
   });
 });
 afterAll(async () => {
@@ -46,6 +46,41 @@ test("installs a direct app bundle", async () => {
   const result = await install(bundle);
   expect(result.exitCode).toBe(0);
   expect(installedPath(result.stdout)).toBe(bundle);
+});
+test.each(["Device.ipa", "Device.IPA", "Build.zip", "uploaded-without-extension"])(
+  "rejects unsupported install files before invoking simctl: %s",
+  async name => {
+    const file = join(root, name);
+    await writeFile(file, Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    const started = join(root, `unsupported-${name}-started`);
+    process.env.SERVE_SIM_INSTALL_STARTED = started;
+    try {
+      expect(await install(file)).toMatchObject({
+        exitCode: 1,
+        stderr: expect.stringContaining("Simulator installs require a Simulator .app bundle or .tar.gz/.tgz archive."),
+      });
+      expect(existsSync(started)).toBe(false);
+    } finally {
+      delete process.env.SERVE_SIM_INSTALL_STARTED;
+    }
+  },
+);
+test("rejects an extensionless staged ZIP upload before invoking simctl", async () => {
+  const uploadId = "unsupported-staged-archive";
+  const started = join(root, "unsupported-staged-started");
+  await runHostActionAsync({
+    action: "upload.append",
+    params: { uploadId, first: true, data: Buffer.from([0x50, 0x4b, 0x03, 0x04]).toString("base64") },
+  }, "unused");
+  process.env.SERVE_SIM_INSTALL_STARTED = started;
+  try {
+    expect(await runHostActionAsync({ action: "app.install", params: { udid: UDID, uploadId } }, "unused"))
+      .toMatchObject({ exitCode: 1, stderr: expect.stringContaining("Simulator installs require") });
+    expect(existsSync(started)).toBe(false);
+  } finally {
+    delete process.env.SERVE_SIM_INSTALL_STARTED;
+    await runHostActionAsync({ action: "upload.remove", params: { uploadId } }, "unused");
+  }
 });
 test("installs tar.gz and extensionless uploaded archives, preserving executable bits and cleaning extraction", async () => {
   await app();

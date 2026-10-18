@@ -197,9 +197,9 @@ describe("simctl-backed actions", () => {
   });
 
   it("resolves a staged upload into the install path", async () => {
-    const out = await argv("app.install", { udid: UDID, uploadId: "staged.ipa" });
+    const out = await argv("app.install", { udid: UDID, uploadId: "staged.app" });
     expect(out.slice(0, 4)).toEqual(["xcrun", "simctl", "install", UDID]);
-    expect(out[4]).toMatch(/serve-sim-uploads\/\d+-[0-9a-f]{8}\/staged\.ipa$/);
+    expect(out[4]).toMatch(/serve-sim-uploads\/\d+-[0-9a-f]{8}\/staged\.app$/);
   });
 });
 

@@ -420,7 +420,9 @@ Android parity remains outside this serve-sim rollout.
 containing exactly one outer `.app` bundle. EAS `.tar.gz`/`.tgz` artifacts and
 extensionless staged gzip uploads are supported. The catalog advertises
 `uploadArchive: "tar.gz"`; clients can use it to package a local `.app` directory
-before uploading. Device `.ipa` builds are not simulator apps.
+before uploading. Device `.ipa` builds and `.zip` archives are refused with an
+actionable Simulator-build error before installation. Regular files without a
+gzip header are also refused, including extensionless staged ZIP uploads.
 
 Archives extract into a private temporary directory, preserving executable bits.
 Traversal, external links and special files are refused. Expanded contents are
