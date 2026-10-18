@@ -821,6 +821,7 @@ async function runProcedureAsync(
           ? await installAppAsync(p.udid, path, deadline, serveSimBinPath)
           : await withStagedUploadSnapshotAsync(uploadId, (source) =>
               installAppAsync(p.udid, source, deadline, serveSimBinPath),
+              deadline,
             );
       } catch (error) {
         return {
