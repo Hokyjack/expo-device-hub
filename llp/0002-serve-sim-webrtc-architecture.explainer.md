@@ -134,6 +134,20 @@ The recording uses a separate hardware H.264 session at native resolution. See
 [Video pipeline and recording](0001-serve-sim-video-pipeline.explainer.md) for why this encode is
 independent of viewer settings.
 
+After 500 ms without changed pixels, fixed Duo panel feeds suppress identical
+pixel submissions to a 5 fps keepalive;
+changed pixels and a requested keyframe bypass that idle limit on the next pump
+tick. This avoids competing with the active panel for the VM's encoder while
+the outer panel is static. The pump's `pumpRepeats` counts planned repeats;
+`idleRepeatSkips` counts those suppressed before `forwardedFrames` increments.
+Fixed-panel shared H.264 senders use `maintainFramerateAndResolution`: the shared
+resolution policy still follows bitrate, and the bounded shared encoder replaces
+pending work when it cannot keep up. Per-peer CPU adaptation otherwise adds a
+second frame-rate controller ahead of that encoder. Root device feeds keep their
+existing sender and repeat policies. [observed:
+`Sources/SimNative/WebRTCPublisher.swift`, `drainFramePump(generation:chained:)`,
+`applySenderParameters(to:)`; `Sources/StreamingPolicy/PanelFrameCadence.swift`]
+
 `/webrtc/stats` also exposes cumulative `sharedEncoderFlow` counters: submitted,
 coalesced pending frames, completed encodes and failed encode/conversion results, plus wall-clock milliseconds
 spent waiting in the latest-frame slot, dispatching the encode task, awaiting the

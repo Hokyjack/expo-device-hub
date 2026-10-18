@@ -424,6 +424,7 @@ actor CaptureEngine {
                 sourceSubmitCount: flow?.sourceSubmitCount,
                 sourceSubmitSumMs: flow.map { Double($0.sourceSubmitSumNs) / 1_000_000 },
                 sourceSubmitMaxMs: flow.map { Double($0.sourceSubmitMaxNs) / 1_000_000 },
+                idleRepeatSkips: flow?.idleRepeatSkips,
                 cpuFallbacks: timings.cpuFallbacks,
                 poolDrops: timings.poolDrops,
                 attempts: timings.attempts,
@@ -654,7 +655,8 @@ actor CaptureEngine {
             maxFps: options.h264Fps,
             targetBitrate: options.h264Bitrate,
             maxDimension: options.maxDimension,
-            encodeCanvas: webRTCEncodeCanvas
+            encodeCanvas: webRTCEncodeCanvas,
+            fixedPanel: screenID != nil
         )
         let consumerId = UUID()
         consumers[consumerId] = WebRTCConsumer(publisher: publisher)

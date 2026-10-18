@@ -58,6 +58,7 @@ export interface CaptureCounts {
   sourceSubmitCount?: number | null;
   sourceSubmitSumMs?: number | null;
   sourceSubmitMaxMs?: number | null;
+  idleRepeatSkips?: number | null;
   cpuFallbacks: number | null;
   poolDrops?: number | null;
   attempts: number | null;
@@ -260,6 +261,7 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     sourceSubmitCount: maybeNumber(raw.sourceSubmitCount),
     sourceSubmitSumMs: maybeNumber(raw.sourceSubmitSumMs),
     sourceSubmitMaxMs: maybeNumber(raw.sourceSubmitMaxMs),
+    idleRepeatSkips: maybeNumber(raw.idleRepeatSkips),
     cpuFallbacks: maybeNumber(raw.cpuFallbacks),
     poolDrops: maybeNumber(raw.poolDrops),
     attempts: maybeNumber(raw.attempts),

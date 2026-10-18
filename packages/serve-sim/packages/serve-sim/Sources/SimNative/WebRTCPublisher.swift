@@ -105,6 +105,7 @@ struct WebRTCCaptureCounts: Codable {
     let sourceSubmitCount: UInt64?
     let sourceSubmitSumMs: Double?
     let sourceSubmitMaxMs: Double?
+    let idleRepeatSkips: UInt64?
     let cpuFallbacks: UInt64
     let poolDrops: UInt64
     let attempts: UInt64
@@ -285,8 +286,12 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var frameRatePolicy: WebRTCFrameRatePolicy
     private var targetBitrate: Int
     private var maxDimension: Int
+    private var panelCadence: PanelFrameCadence?
+    private let fixedPanel: Bool
 
-    init(maxFps: Int, targetBitrate: Int, maxDimension: Int, encodeCanvas: Dimensions) {
+    init(maxFps: Int, targetBitrate: Int, maxDimension: Int, encodeCanvas: Dimensions, fixedPanel: Bool = false) {
+        self.fixedPanel = fixedPanel
+        self.panelCadence = fixedPanel ? PanelFrameCadence() : nil
         let frameRatePolicy = WebRTCFrameRatePolicy(configuredFramesPerSecond: maxFps)
         let normalizedMaxFps = frameRatePolicy.outputFramesPerSecond
         self.frameRatePolicy = frameRatePolicy
@@ -613,6 +618,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         let sourceSubmitCount: UInt64
         let sourceSubmitSumNs: UInt64
         let sourceSubmitMaxNs: UInt64
+        let idleRepeatSkips: UInt64?
     }
 
     func frameFlowCounts() -> FrameFlowCounts {
@@ -625,6 +631,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             pumpTimerTicks, pumpTimerLateSumNs, pumpTimerLateMaxNs,
             sourceSubmitCount, sourceSubmitSumNs, sourceSubmitMaxNs
         )
+        let idleRepeatSkips = panelCadence?.skippedRepeats
         frameLock.unlock()
         return FrameFlowCounts(
             offered: offered, forwarded: forwarded, pumpRestarts: restarts,
@@ -632,7 +639,8 @@ final class WebRTCPublisher: @unchecked Sendable {
             canvasMismatchDrops: mismatches, pumpDeferrals: deferrals, pumpRepeats: repeats,
             unchangedFrames: unchanged,
             pumpTimerTicks: timing.0, pumpTimerLateSumNs: timing.1, pumpTimerLateMaxNs: timing.2,
-            sourceSubmitCount: timing.3, sourceSubmitSumNs: timing.4, sourceSubmitMaxNs: timing.5
+            sourceSubmitCount: timing.3, sourceSubmitSumNs: timing.4, sourceSubmitMaxNs: timing.5,
+            idleRepeatSkips: idleRepeatSkips
         )
     }
 
@@ -665,6 +673,9 @@ final class WebRTCPublisher: @unchecked Sendable {
 
     func requestIDR() {
         sharedEncoderFactory.requestIDR()
+        frameLock.lock()
+        panelCadence?.requestFrame()
+        frameLock.unlock()
     }
 
     /// Capture delivery. The resizer hands the frame back through `frameReady`.
@@ -735,6 +746,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         // A frame with the same pixels as the retained one does not count as fresh for the pacer,
         // but it still lets the pacer's watchdog restart a lost chain.
         if unchanged { unchangedFrameCount &+= 1 }
+        else { panelCadence?.frameChanged(atNanoseconds: nowNs) }
         let generation = framePumpGeneration
         let decision = unchanged
             ? framePacer.unchangedFrameArrived(atNanoseconds: nowNs)
@@ -1028,7 +1040,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         if canvas != encodeCanvas {
             encodeCanvas = canvas
             canvasSequence &+= 1
-            sharedEncoderFactory.requestIDR()
+            requestIDR()
             canvasObserver?(canvas, canvasSequence)
         }
         // VP8 and H.264 peers receive the same input canvas; only encoding is per codec.
@@ -1067,6 +1079,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             }
             return
         }
+        let shouldSend = panelCadence?.shouldSend(atNanoseconds: nowNs) ?? true
         frameLock.unlock()
 
         // Preserve the cadence by scheduling the next tick before scaling or
@@ -1074,7 +1087,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         if chained {
             scheduleFramePump(afterNs: nextDelayNs, generation: generation)
         }
-        if sessions.values.contains(where: \.isConnected) {
+        if shouldSend, sessions.values.contains(where: \.isConnected) {
             sendFrameOnQueue(frame.pixelBuffer, timestampNanoseconds: timestampNs)
         }
     }
@@ -1124,6 +1137,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             acceptsFrames = active
             frameAcceptanceGeneration &+= 1
             latestFrame = nil
+            panelCadence?.requestFrame()
             arrivalPumpPending = false
             framePumpGeneration &+= 1
             framePacer.setActive(active)
@@ -1345,6 +1359,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             guard !session.isConnected else { return }
             session.isConnected = true
             self.refreshFrameAcceptance()
+            self.requestIDR()
             self.applySenderParameters(to: session)
             streamLog("[webrtc] Peer connected; activePeers=\(self.sessions.values.filter(\.isConnected).count)")
         }
@@ -1666,10 +1681,14 @@ final class WebRTCPublisher: @unchecked Sendable {
             encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
         }
         parameters.encodings = encodings
-        // Balanced spends some of a shortfall on frame rate. Holding frame rate outright takes
-        // a 1206-wide surface to 300x654, where UI text is unreadable.
+        // Fixed Duo H.264 feeds already have a shared resolution controller and a
+        // bounded encoder mailbox. Per-peer CPU adaptation treats asynchronous VM
+        // encode delays as CPU load and drops fresh frames before that mailbox.
+        // @ref LLP 0002#capture-and-frame-flow — one cadence owner for fixed-panel H.264 feeds.
         parameters.degradationPreference = NSNumber(value: (
-            sharedH264 ? LKRTCDegradationPreference.maintainResolution : .balanced
+            sharedH264
+                ? (fixedPanel ? LKRTCDegradationPreference.maintainFramerateAndResolution : .maintainResolution)
+                : .balanced
         ).rawValue)
         sender.parameters = parameters
         // Read back: assigning `scaleResolutionDownBy` is not proof libwebrtc kept it.

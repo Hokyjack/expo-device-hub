@@ -173,6 +173,7 @@ describe("capture counts", () => {
       sourceSubmitCount: null,
       sourceSubmitSumMs: null,
       sourceSubmitMaxMs: null,
+      idleRepeatSkips: null,
       cpuFallbacks: null,
       poolDrops: null,
       attempts: null,
@@ -229,6 +230,14 @@ describe("frame flow counts", () => {
 
     expect(stats.capture?.offeredFrames).toBe(880);
     expect(stats.capture?.forwardedFrames).toBe(300);
+  });
+
+  test("reports identical Duo panel frames skipped before source submission", () => {
+    const stats = readSenderStats({ sessions: [], capture: {
+      screenFrames: 0, idleFrames: 5, idleRepeatSkips: 55, forwardedFrames: 5,
+    } });
+    expect(stats.capture?.idleRepeatSkips).toBe(55);
+    expect(stats.capture?.forwardedFrames).toBe(5);
   });
 
   test("reports one shared H.264 encode counter for all viewers", () => {
