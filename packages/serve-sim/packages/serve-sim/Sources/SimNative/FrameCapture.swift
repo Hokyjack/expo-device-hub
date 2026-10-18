@@ -167,7 +167,7 @@ actor FrameCapture {
         displayConfigurationReady = true
         captureFrame(force: true)
         startSurfacePoller()
-        print("[capture] Frame callbacks registered + 60Hz IOSurface poll + 5fps idle floor")
+        print("[capture] Frame callbacks registered + \(fixedScreenID == nil ? 60 : 120)Hz IOSurface poll + 5fps idle floor")
     }
 
     /// Find all framebuffer display descriptors, register callbacks on each,
@@ -440,7 +440,7 @@ actor FrameCapture {
     /// held the poll to 48Hz on bare metal even with nothing else running. `.strict` opts out
     /// of coalescing, which is what the frame pump needed on virtualized hosts.
     private func startSurfacePoller() {
-        let intervalNs = UInt64(SimulatorCapturePollPolicy.intervalNanoseconds)
+        let intervalNs = UInt64(SimulatorCapturePollPolicy.intervalNanoseconds(forFixedPanel: fixedScreenID != nil))
         let interval = DispatchTimeInterval.nanoseconds(Int(intervalNs))
         let first = DispatchTime.now() + interval
         pollGrid = PollDeadlineGrid(

@@ -148,6 +148,12 @@ existing sender and repeat policies. [observed:
 `Sources/SimNative/WebRTCPublisher.swift`, `drainFramePump(generation:chained:)`,
 `applySenderParameters(to:)`; `Sources/StreamingPolicy/PanelFrameCadence.swift`]
 
+Fixed Duo panel captures poll IOSurface seeds at 120 Hz while the root capture
+keeps its 60 Hz poll. Unchanged seeds still skip snapshots, and the static capture
+floor remains 5 fps. This does not change the publisher's configured output rate.
+[observed: `Sources/SimNative/FrameCapture.swift`, `startSurfacePoller()`;
+`Sources/StreamingPolicy/WebRTCFrameRatePolicy.swift`]
+
 `/webrtc/stats` also exposes cumulative `sharedEncoderFlow` counters: submitted,
 coalesced pending frames, completed encodes and failed encode/conversion results, plus wall-clock milliseconds
 spent waiting in the latest-frame slot, dispatching the encode task, awaiting the
