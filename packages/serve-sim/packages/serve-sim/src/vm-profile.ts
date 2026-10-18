@@ -145,7 +145,7 @@ export function configureVmProfile(enabled: boolean, devices: string[], deps: Vm
         xprotectBlocked = "System Integrity Protection is engaged; XProtect remains enabled";
       }
       for (const t of targets.filter((t) => t.device && devices.includes(t.device))) apply(t);
-      return { disabled: changed, ...(xprotectBlocked ? { xprotectBlocked } : {}), restore: "serve-sim vm-profile off" };
+      return { disabled: changed, xprotectBlocked, restore: "serve-sim vm-profile off" };
     } catch (error) {
       const failures: string[] = [];
       for (const id of added.reverse()) {
