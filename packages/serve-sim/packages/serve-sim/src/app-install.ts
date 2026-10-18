@@ -15,6 +15,7 @@ import {
 
 const MAX_ARCHIVE_BYTES = 2 * 1024 ** 3;
 const MAX_ARCHIVE_ENTRIES = 100_000;
+const MAX_ARCHIVE_DECOMPRESSION_RATIO = 2048;
 // Bound expanded disk use across simultaneous install requests.
 const installArchive = createSerialQueue();
 
@@ -50,15 +51,15 @@ async function appsIn(directory: string): Promise<string[]> {
   return apps;
 }
 
-export async function installAppAsync(udid: string, path: string): Promise<HostActionResult> {
-  const deadline = Date.now() + actionTimeoutMs();
+export async function installAppAsync(udid: string, path: string, deadline = Date.now() + actionTimeoutMs()): Promise<HostActionResult> {
   const remaining = (): number => {
     const ms = deadline - Date.now();
     if (ms <= 0) throw new Error("App installation timed out.");
     return ms;
   };
   try {
-    if (!(await isArchive(path))) return await runInvocation(installAppInvocation(udid, path));
+    remaining();
+    if (!(await isArchive(path))) return await runInvocation({ ...installAppInvocation(udid, path), timeoutMs: remaining() });
     return await installArchive(async () => {
       remaining();
       const directory = await mkdtemp(join(tmpdir(), "serve-sim-app-install-"));
@@ -68,6 +69,8 @@ export async function installAppAsync(udid: string, path: string): Promise<HostA
         const unpack = new Unpack({
           cwd: directory,
           strict: true,
+          // The expanded-byte and entry ceilings remain authoritative for compressible app assets.
+          maxDecompressionRatio: MAX_ARCHIVE_DECOMPRESSION_RATIO,
           preservePaths: false,
           chmod: true,
           filter(name, entry) {

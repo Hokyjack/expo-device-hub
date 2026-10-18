@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -173,4 +173,38 @@ test("keeps extracted entries owner-accessible for install and cleanup", async (
   const result = await install(file);
   expect(result.exitCode).toBe(0);
   expect(existsSync(installedPath(result.stdout))).toBe(false);
+});
+
+
+test("installs a highly compressible app below the expanded size limit", async () => {
+  await app("Compressible.app");
+  await writeFile(join(root, "Compressible.app", "zeros"), Buffer.alloc(20 * 1024 ** 2));
+  const result = await install(await archive("compressible.tgz", ["Compressible.app"]));
+  expect(result.exitCode, result.stderr).toBe(0);
+});
+
+test.each(["../../outside", "../../../etc/passwd", "folder/../../../../outside", "/etc/passwd"])(
+  "rejects an escaping symlink target %s",
+  async target => {
+    expect(await install(await headerArchive("escaping-link.tgz", "My.app/link", 0, "SymbolicLink", target)))
+      .toMatchObject({exitCode:1, stderr:expect.stringContaining("unsafe")});
+  },
+);
+
+test.each(["uploadId", "path"])("staged %s installs exclude removal while waiting for extraction", async source => {
+  const uploadId = `install-reader-${source}`;
+  const bytes = await readFile(await archive(`queued-${source}.tgz`, ["My App.app"]));
+  await runHostActionAsync({action:"upload.append", params:{uploadId, first:true, data:bytes.toString("base64")}}, "unused");
+  process.env.SERVE_SIM_INSTALL_SLEEP = "0.1";
+  try {
+    const first = install(await archive(`ahead-${source}.tgz`, ["My App.app"]));
+    await Bun.sleep(30);
+    const pending = runHostActionAsync({action:"app.install", params:{udid:UDID, [source]:source === "path" ? join(UPLOAD_DIR, uploadId) : uploadId}}, "unused");
+    const removed = runHostActionAsync({action:"upload.remove", params:{uploadId}}, "unused");
+    const results = await Promise.all([first, pending, removed]);
+    expect(results.map(result => result.exitCode), results[1]?.stderr).toEqual([0,0,0]);
+    expect(existsSync(join(UPLOAD_DIR, uploadId))).toBe(false);
+  } finally {
+    delete process.env.SERVE_SIM_INSTALL_SLEEP;
+  }
 });
