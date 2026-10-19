@@ -317,11 +317,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         )
         let encoderFactory = SharedWebRTCEncoderFactory(
             bitrate: targetBitrate, fps: normalizedMaxFps,
-            h264Allowed: { Self.detectedH264Support.allowed },
-            // Keep the paravirtualized fixed-panel experiment deterministic:
-            // otherwise one early dropped frame silently chooses default rate control.
-            lowLatencyRateControl: !(fixedPanel
-                && Self.detectedH264Support.encoderID?.hasPrefix("paravirtualized:") == true)
+            h264Allowed: { Self.detectedH264Support.allowed }
         )
         sharedEncoderFactory = encoderFactory
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
@@ -1696,14 +1692,10 @@ final class WebRTCPublisher: @unchecked Sendable {
             encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
         }
         parameters.encodings = encodings
-        // Fixed Duo H.264 feeds already have a shared resolution controller and a
-        // bounded encoder mailbox. Per-peer CPU adaptation treats asynchronous VM
-        // encode delays as CPU load and drops fresh frames before that mailbox.
-        // @ref LLP 0002#capture-and-frame-flow — one cadence owner for fixed-panel H.264 feeds.
+        // Keep shared H.264 resolution under the shared controller while allowing
+        // libwebrtc to reduce frame rate when it detects encoding overload.
         parameters.degradationPreference = NSNumber(value: (
-            sharedH264
-                ? (fixedPanel ? LKRTCDegradationPreference.maintainFramerateAndResolution : .maintainResolution)
-                : .balanced
+            sharedH264 ? LKRTCDegradationPreference.maintainResolution : .balanced
         ).rawValue)
         sender.parameters = parameters
         // Read back: assigning `scaleResolutionDownBy` is not proof libwebrtc kept it.

@@ -6,17 +6,8 @@ import XCTest
 /// The encoder falls back from low-latency to default rate control once, after its first failed
 /// encode, and counts it.
 final class H264EncoderFallbackTests: XCTestCase {
-    func testExplicitDefaultRateControlIsNotReportedAsFallback() async throws {
-        let encoder = H264Encoder(fps: 60, bitrate: 500_000, constrainedBaseline: true,
-                                  dynamicBitrate: true, lowLatencyRateControl: false)
-        let flat = try frame()
-        for _ in 0..<5 { _ = try await encoder.encode(flat) }
-        let fallbacks = await encoder.lowLatencyFallbacks
-        XCTAssertEqual(fallbacks, 0)
-    }
-
     func testRuntimeIdentityExistsOnlyForAnActiveCompressionSession() async throws {
-        let encoder = H264Encoder(fps: 60, bitrate: 500_000, lowLatencyRateControl: false)
+        let encoder = H264Encoder(fps: 60, bitrate: 500_000)
         let before = await encoder.runtimeIdentity
         XCTAssertNil(before)
         _ = try await encoder.encode(frame())

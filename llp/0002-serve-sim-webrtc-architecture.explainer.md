@@ -149,10 +149,10 @@ counts planned repeats; `idleRepeatSkips` counts inactive-panel suppressions bef
 `ActiveDisplayObservation`; `Sources/SimNative/FrameCapture.swift`, `updateDisplayInfo(_:)`;
 `Sources/SimNative/WebRTCPublisher.swift`, `sendFrame(_:timestamp:panelActive:)`;
 `Sources/StreamingPolicy/PanelFrameCadence.swift`]
-Fixed-panel shared H.264 senders use `maintainFramerateAndResolution`: the shared
-resolution policy still follows bitrate, and the bounded shared encoder replaces
-pending work when it cannot keep up. Per-peer CPU adaptation otherwise adds a
-second frame-rate controller ahead of that encoder. Root device feeds keep their
+Shared H.264 senders, including fixed Duo panels, use `maintainResolution`: the
+shared resolution policy follows bitrate, and libwebrtc can reduce frame rate
+when its encode-overuse detector observes overload. The bounded shared encoder
+replaces pending work when it cannot keep up. Root device feeds keep their
 existing sender and repeat policies. [observed:
 `Sources/SimNative/WebRTCPublisher.swift`, `drainFramePump(generation:chained:)`,
 `applySenderParameters(to:)`; `Sources/StreamingPolicy/PanelFrameCadence.swift`]
@@ -163,11 +163,11 @@ floor remains 5 fps. This does not change the publisher's configured output rate
 [observed: `Sources/SimNative/FrameCapture.swift`, `startSurfacePoller()`;
 `Sources/StreamingPolicy/WebRTCFrameRatePolicy.swift`]
 
-The experimental fixed-panel path requests default rate control when the H.264
-probe identifies a paravirtualized encoder. Other paths retain the low-latency
-request and its existing fallback. `sharedCanvas.rateControlMode` reports the
-request after any fallback, separately from the fallback count. [observed:
-`Sources/SimNative/WebRTCPublisher.swift`, initializer;
+All shared H.264 paths request low-latency rate control and retain the existing
+fallback to default rate control if session creation or encoding fails.
+`sharedCanvas.rateControlMode` reports the request after any fallback, separately
+from the fallback count. [observed:
+`Sources/SimNative/H264Encoder.swift`, `rebuildSession()` and `encode(_:forceKeyframe:)`;
 `Sources/SimNative/SharedWebRTCEncoder.swift`, `rateControlMode()`]
 
 

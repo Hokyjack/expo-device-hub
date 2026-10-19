@@ -42,9 +42,8 @@ final class SharedWebRTCEncoderFactory: NSObject, LKRTCVideoEncoderFactory {
     private let h264Allowed: () -> Bool
 
     init(bitrate: Int, fps: Int, h264Allowed: @escaping () -> Bool,
-         lowLatencyRateControl: Bool = true, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
-        shared = SharedWebRTCEncoder(bitrate: bitrate, fps: fps,
-                                     lowLatencyRateControl: lowLatencyRateControl, encodeFrame: encodeFrame)
+         encodeFrame: SharedWebRTCEncodeFrame? = nil) {
+        shared = SharedWebRTCEncoder(bitrate: bitrate, fps: fps, encodeFrame: encodeFrame)
         self.h264Allowed = h264Allowed
     }
 
@@ -173,7 +172,6 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     private var scaleObserver: ((Double) -> Void)?
     private var peers: [Int: SharedEncoderPeerStats] = [:]
     private var flow = SharedEncoderFlowStats()
-    private let lowLatencyRateControl: Bool
 
     private func stat(_ peer: Int, _ update: (inout SharedEncoderPeerStats) -> Void) {
         var value = peers[peer] ?? SharedEncoderPeerStats(peer: peer)
@@ -181,12 +179,10 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         peers[peer] = value
     }
 
-    init(bitrate: Int, fps: Int, lowLatencyRateControl: Bool, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
+    init(bitrate: Int, fps: Int, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
         self.fps = fps
-        self.lowLatencyRateControl = lowLatencyRateControl
         encoder = H264Encoder(fps: fps, bitrate: bitrate,
-                              constrainedBaseline: true, dynamicBitrate: true,
-                              lowLatencyRateControl: lowLatencyRateControl)
+                              constrainedBaseline: true, dynamicBitrate: true)
         let encoder = self.encoder
         self.encodeFrame = encodeFrame ?? { buffer, forceIDR, bitrate, fps in
             await encoder.update(fps: fps, bitrate: bitrate)
@@ -281,7 +277,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     func flowStats() -> SharedEncoderFlowStats { onQueue { flow } }
 
     func rateControlMode() -> String {
-        onQueue { lowLatencyRateControl && fallbacks == 0 ? "low-latency" : "default" }
+        onQueue { fallbacks == 0 ? "low-latency" : "default" }
     }
 
     func liveIdentity() -> H264RuntimeIdentity? { onQueue { liveEncoderIdentity } }
