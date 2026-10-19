@@ -1,5 +1,11 @@
 # @expo/serve-sim
 
+## 0.10.2
+
+### Patch Changes
+
+- 059ca8e: Reduce encoding work on inactive Duo displays and improve H.264 throughput for Duo panels on virtualized Macs.
+
 ## 0.10.1
 
 ### Patch Changes
