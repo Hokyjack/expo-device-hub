@@ -1,5 +1,15 @@
 # @expo/hub-client
 
+## 1.7.0
+
+### Minor Changes
+
+- 3fc89c6: Expose `inputError` on `DeviceScreenClient`, and keep Android video live when only the input socket fails. Render the input-error notice in the Hub phone frame while consumers continue to own their UI.
+
+### Patch Changes
+
+- 99a8a36: Cancel held gestures, keys and paced input when a client changes or loses focus. Preserve unsent queued commands when a WebSocket send fails.
+
 ## 1.6.1
 
 ### Patch Changes

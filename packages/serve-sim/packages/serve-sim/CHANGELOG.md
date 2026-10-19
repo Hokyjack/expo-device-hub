@@ -1,5 +1,13 @@
 # @expo/serve-sim
 
+## 0.10.1
+
+### Patch Changes
+
+- 6bd437b: Give the installed clipboard app a Clipboard Helper name and icon.
+- 18889a2: Make the first Command+V insert text into the focused Simulator app with Hardware Keyboard off.
+- d3b2b77: Use CoreDevice touch and keyboard input on supported ordinary iOS simulators so input still reaches apps when CoreDevice owns the guest HID service.
+
 ## 0.10.0
 
 ### Minor Changes
