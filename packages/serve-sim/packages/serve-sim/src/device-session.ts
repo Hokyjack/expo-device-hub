@@ -519,6 +519,17 @@ export class DeviceSession {
       }
       try {
         const body = parseJsonBody(await readRequestBody(req, 16_384), "invalid_recording_request");
+        // Test artifact only. Existing helper authorization still applies.
+        if (typeof body === "object" && body !== null && "benchmarkRecordingMode" in body) {
+          if (typeof body.benchmarkRecordingMode !== "string"
+            || !["inspect", "normal", "encoder-paused", "recording-paused"].includes(body.benchmarkRecordingMode)) {
+            this.sendJson(res, 400, { error: "invalid_benchmark_recording_mode" });
+            return;
+          }
+          const snapshot = JSON.parse(await this.capture.benchmarkRecording(body.benchmarkRecordingMode));
+          this.sendJson(res, 200, snapshot);
+          return;
+        }
         if (recordingsShuttingDown) {
           this.sendJson(res, 503, { error: "server_stopping", message: "serve-sim is stopping" });
           return;

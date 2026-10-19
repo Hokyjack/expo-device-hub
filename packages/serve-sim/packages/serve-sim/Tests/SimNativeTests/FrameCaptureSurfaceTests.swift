@@ -105,6 +105,22 @@ final class FrameCaptureSurfaceTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(1_100))
     }
 
+    func testBenchmarkCapturePauseSuppressesCopiesUntilResumed() async throws {
+        let descriptor = FakeFramebufferDescriptor(surface(width: 64, height: 128, gray: 255))
+        let (capture, log) = await capture(with: descriptor)
+        await capture.captureFrameForTesting(force: true)
+        XCTAssertEqual(log.all.count, 1)
+        await capture.setBenchmarkSuspended(true)
+        await capture.captureFrameForTesting(force: true)
+        XCTAssertEqual(log.all.count, 1)
+        let paused = await capture.frameCounts()
+        await capture.setBenchmarkSuspended(false)
+        await capture.captureFrameForTesting(force: true)
+        XCTAssertEqual(log.all.count, 2)
+        let resumed = await capture.frameCounts()
+        XCTAssertEqual(resumed.idle, paused.idle + 1)
+    }
+
     func testMaskedOnlyCallbackSurvivesLiveRepicks() async throws {
         let descriptor = FakeFramebufferDescriptor(nil)
         let light = surface(width: 64, height: 128, gray: 255)
@@ -236,6 +252,80 @@ final class FrameCaptureSurfaceTests: XCTestCase {
         XCTAssertEqual(size?.width, 80)
         XCTAssertEqual(size?.height, 160)
         XCTAssertEqual(log.screenChanges, 1)
+        await capture.stop()
+    }
+
+    func testSourceCountersSeparateCallbackFramesFromPollsAndSeedSkips() async throws {
+        let clock = FakeMonotonicClock()
+        let descriptor = FakeFramebufferDescriptor(surface(width: 64, height: 128, gray: 0))
+        let (capture, log) = await capture(with: descriptor, clock: clock)
+        await capture.pollSurfaceForTesting()
+        await capture.pollSurfaceForTesting()
+        let light = surface(width: 64, height: 128, gray: 255)
+        await capture.surfaceChangedForTesting(descriptor: descriptor, masked: light)
+        descriptor.surface = surface(width: 64, height: 128, gray: 128)
+        clock.advance(milliseconds: 1_100)
+        await capture.pollSurfaceForTesting()
+        let source = await capture.sourceDiagnostics()
+        XCTAssertEqual(log.all.count, 3)
+        XCTAssertEqual(source.pollCalls, 3)
+        XCTAssertEqual(source.surfaceCallbacks, 1)
+        XCTAssertEqual(source.pollFrames, 2)
+        XCTAssertEqual(source.callbackFrames, 1)
+        XCTAssertEqual(source.unchangedSeedSkips, 1)
+        XCTAssertEqual(source.missingSurfaceSkips, 0)
+        XCTAssertEqual(source.liveSurfaceChanges, 2)
+        XCTAssertEqual(source.callbackSurfaceChanges, 1)
+        await capture.stop()
+    }
+
+    func testFrameCallbacksFromOtherDescriptorsDoNotCountAsSelectedFeedDelivery() async throws {
+        let selected = FakeFramebufferDescriptor(surface(width: 64, height: 128, gray: 0))
+        let other = FakeFramebufferDescriptor(surface(width: 32, height: 64, gray: 255))
+        let capture = FrameCapture()
+        await capture.installDescriptorsForTesting([
+            (selected, panel),
+            (other, SimDisplayMetadata(screenID: 2, orientation: nil, chromeIdentifier: nil, screenType: 0)),
+        ]) { _, _, _ in }
+        await capture.pollSurfaceForTesting()
+        await capture.frameCallbackForTesting(descriptor: other)
+        await capture.frameCallbackForTesting(descriptor: selected)
+        let source = await capture.sourceDiagnostics()
+        XCTAssertEqual(source.frameCallbacks, 2)
+        XCTAssertEqual(source.selectedFrameCallbacks, 1)
+        XCTAssertEqual(source.otherFrameCallbacks, 1)
+        XCTAssertEqual(source.unknownFrameCallbacks, 0)
+        XCTAssertEqual(source.callbackFrames, 0, "unchanged selected surface produces no new frame")
+        await capture.stop()
+    }
+
+    func testSourceCountersExposePollsWithoutAnAvailableSurface() async throws {
+        let (capture, log) = await capture(with: FakeFramebufferDescriptor(nil))
+        await capture.pollSurfaceForTesting()
+        await capture.pollSurfaceForTesting()
+        let source = await capture.sourceDiagnostics()
+        XCTAssertEqual(source.pollCalls, 2)
+        XCTAssertEqual(source.missingSurfaceSkips, 2)
+        XCTAssertEqual(source.pollFrames, 0)
+        XCTAssertEqual(log.all.count, 0)
+        await capture.stop()
+    }
+
+    func testSnapshotTimingsExcludeUnchangedSeedAttempts() async throws {
+        let descriptor = FakeFramebufferDescriptor(surface(width: 64, height: 128, gray: 0))
+        let (capture, _) = await capture(with: descriptor)
+        await capture.captureFrameForTesting(force: false)
+        for _ in 0..<5 { await capture.captureFrameForTesting(force: false) }
+        let once = await capture.snapshotTimings()
+        XCTAssertEqual(once.count, 1)
+        XCTAssertEqual(once.failures, 0)
+        XCTAssertGreaterThan(once.sumNs, 0)
+        XCTAssertLessThanOrEqual(once.maxNs, once.sumNs)
+        await capture.captureFrameForTesting(force: true)
+        let twice = await capture.snapshotTimings()
+        XCTAssertEqual(twice.count, 2)
+        XCTAssertGreaterThanOrEqual(twice.sumNs, once.sumNs)
+        XCTAssertLessThanOrEqual(twice.over16Ms, twice.count)
         await capture.stop()
     }
 

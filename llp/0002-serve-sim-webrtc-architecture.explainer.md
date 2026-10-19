@@ -143,7 +143,9 @@ propagated even when the surface seed did not change. This avoids spending the
 VM encoder budget on the inactive panel without slowing a motionless active UI.
 Explicit publisher keyframe requests bypass the inactive limit. Browser PLI reaches
 the encoder through libwebrtc on the next source submission, so an inactive panel's
-PLI recovery can wait up to the 200 ms keepalive interval. [observed: `Sources/SimNative/CoreDeviceDisplayInfo.swift`,
+PLI recovery can wait up to the 200 ms keepalive interval. The pump's `pumpRepeats`
+counts planned repeats; `idleRepeatSkips` counts inactive-panel suppressions before
+`forwardedFrames` increments. [observed: `Sources/SimNative/CoreDeviceDisplayInfo.swift`,
 `ActiveDisplayObservation`; `Sources/SimNative/FrameCapture.swift`, `updateDisplayInfo(_:)`;
 `Sources/SimNative/WebRTCPublisher.swift`, `sendFrame(_:timestamp:panelActive:)`;
 `Sources/StreamingPolicy/PanelFrameCadence.swift`]
@@ -171,6 +173,57 @@ Per-peer `maintainResolution` adaptation is unchanged. [observed:
 `Sources/StreamingPolicy/WebRTCH264RateControlPolicy.swift`;
 `Sources/SimNative/WebRTCPublisher.swift`, initializer and `applySenderParameters(to:)`;
 `Sources/SimNative/H264Encoder.swift`, initializer, `rebuildSession()` and `encode(_:forceKeyframe:)`]
+
+This probe is a capability/environment selector, not the live stream's encoder
+identity or physical GPU utilization. The selected default and low-latency
+requests can use different VideoToolbox backends. `sharedCanvas.rateControlMode`
+reports the request after any fallback; explicit default starts with zero
+fallbacks. Live encoder identity remains separate. [observed:
+`Sources/SimNative/SharedWebRTCEncoder.swift`, `rateControlMode()` and `liveIdentity()`;
+`Sources/SimNative/WebRTCPublisher.swift`, `detectH264WebRTCSupport()` and sender statistics]
+
+
+For live shared H.264, encoder identity switches from the startup capability probe
+(`probe: true`) to the real compression session's `EncoderID` and
+`UsingHardwareAcceleratedVideoEncoder` properties (`probe: false`) after an encode.
+Unsupported properties remain unknown. This identifies the actual encoding path;
+it does not measure physical host GPU utilization. [observed:
+`Sources/SimNative/H264Encoder.swift`, `rebuildSession()`;
+`Sources/SimNative/WebRTCPublisher.swift`, `encoderIdentity(liveCodecs:)`]
+
+
+`/webrtc/stats` also exposes cumulative `sharedEncoderFlow` counters: submitted,
+coalesced pending frames, completed encodes and failed encode/conversion results, plus wall-clock milliseconds
+spent waiting in the latest-frame slot, dispatching the encode task, awaiting the
+encoder, dispatching completion, and delivering the result. These separate the
+shared encoder from libwebrtc's per-peer `totalEncodeTime`, which includes waiting
+for a queued frame. They measure elapsed time, not CPU utilization. [observed:
+`Sources/SimNative/SharedWebRTCEncoder.swift`, `startEncoding(_:)`]
+
+### Temporary benchmark artifact
+
+The diagnostic layer above PR397 is test-only and must not be merged as a
+production feature. It adds cumulative VT-call, submit-to-callback,
+callback-to-actor-resume, rebuild, extraction and timeout observations. The
+submit-call interval is nested within submit-to-callback, not an additional
+stage to sum. Metadata is sampled after delivery and can lag frame-flow
+counters; fallback can make more than one VT call for a shared completion.
+These are elapsed times, not CPU or physical video-engine utilization.
+[observed: `Sources/SimNative/H264Encoder.swift`, `encodeFrame`;
+`Sources/SimNative/SharedWebRTCEncoder.swift`, `startEncoding`]
+
+In that artifact only, an authenticated POST to the root recording endpoint
+with `benchmarkRecordingMode` selects `normal`, `encoder-paused`,
+`recording-paused`, or `inspect`. The first pause skips recorder submissions;
+the second also skips root capture copies. The recording lease stays active,
+fixed-panel capture is unchanged, and normal mode requests a fresh keyframe.
+This avoids invalidating the hosted worker's recording owner. It is a workload
+suppression experiment, not an ordinary recording-off session. Tests must
+verify settled recorder pending count, frozen encode counters, and root copy
+counts, then restore normal mode. [observed: `src/device-session.ts`,
+`handleVideoRecording`; `Sources/SimNative/CaptureEngine.swift`,
+`benchmarkRecording`; `Sources/SimNative/NativeVideoRecorder.swift`,
+`benchmarkState` and `tick`]
 
 The pump is hardened against hostile host timing, because a production trace
 showed it silently degrading to sends on capture arrivals only, with no

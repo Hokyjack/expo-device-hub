@@ -31,6 +31,28 @@ struct CapturedScreenInfo {
     }
 }
 
+/// Observed capture events, not app draws or compositor presentations. Cumulative per capture object.
+struct CaptureSourceDiagnostics: Codable, Sendable {
+    /// All registered descriptors may notify; only these classified counters identify the selected feed.
+    var frameCallbacks: UInt64 = 0
+    var selectedFrameCallbacks: UInt64 = 0
+    var otherFrameCallbacks: UInt64 = 0
+    var unknownFrameCallbacks: UInt64 = 0
+    var surfaceCallbacks: UInt64 = 0
+    var propertyCallbacks: UInt64 = 0
+    var pollCalls: UInt64 = 0
+    var unchangedSeedSkips: UInt64 = 0
+    var missingSurfaceSkips: UInt64 = 0
+    var callbackFrames: UInt64 = 0
+    var pollFrames: UInt64 = 0
+    var otherFrames: UInt64 = 0
+    var forcedFrames: UInt64 = 0
+    var liveSurfaceReads: UInt64 = 0
+    var liveSurfaceChanges: UInt64 = 0
+    var callbackSurfaceChanges: UInt64 = 0
+    var seedChangesDuringCopy: UInt64 = 0
+}
+
 /// Headless simulator frame capture via direct IOSurface access.
 ///
 /// Uses SimulatorKit frame callbacks (via a private Objective-C protocol)
@@ -46,6 +68,8 @@ actor FrameCapture {
 
     private var photocopier = Photocopier()
     private var snapshotMaxDimension = 0
+    private var source = CaptureSourceDiagnostics()
+    private enum CaptureTrigger { case frameCallback, surfaceCallback, propertiesCallback, poll, other }
     private var pollTicks: UInt64 = 0
     private var pollLateSumNs: UInt64 = 0
     private var pollGrid: PollDeadlineGrid?
@@ -55,6 +79,12 @@ actor FrameCapture {
     private var webRTCCanvasCache: Dimensions?
     private var screenObservers: [UUID: @Sendable () -> Void] = [:]
     private var frameCount: UInt64 = 0
+    /// Snapshot attempts exclude unchanged-seed polls; timings include unsuccessful copies.
+    private var snapshotCount: UInt64 = 0
+    private var snapshotSumNs: UInt64 = 0
+    private var snapshotMaxNs: UInt64 = 0
+    private var snapshotOver16Ms: UInt64 = 0
+    private var snapshotFailures: UInt64 = 0
     private var pickCount: UInt64 = 0
     private var pickSumNs: UInt64 = 0
     private var pickMaxNs: UInt64 = 0
@@ -252,10 +282,11 @@ actor FrameCapture {
         // It has no surface, and every read of its descriptor leaves a ROCKit
         // proxy behind that is never released.
         guard isDeviceBooted() else {
-            updateCachedSurface(nil, for: key)
+            updateCachedSurface(nil, for: key, live: true)
             return nil
         }
 
+        source.liveSurfaceReads &+= 1
         let surfaceSelector = NSSelectorFromString("framebufferSurface")
         var reported: IOSurface?
         if let surfaceObject = descriptor.perform(surfaceSelector)?.takeUnretainedValue() {
@@ -266,11 +297,15 @@ actor FrameCapture {
            let surfaceObject = descriptor.perform(maskedSelector)?.takeUnretainedValue() {
             reported = unsafeBitCast(surfaceObject, to: IOSurface.self)
         }
-        updateCachedSurface(reported, for: key)
+        updateCachedSurface(reported, for: key, live: true)
         return framebufferSurfaces[key]
     }
 
-    private func updateCachedSurface(_ surface: IOSurface?, for key: ObjectIdentifier) {
+    private func updateCachedSurface(_ surface: IOSurface?, for key: ObjectIdentifier, live: Bool = false) {
+        if framebufferSurfaces[key].map(IOSurfaceGetID) != surface.map(IOSurfaceGetID) {
+            if live { source.liveSurfaceChanges &+= 1 }
+            else { source.callbackSurfaceChanges &+= 1 }
+        }
         switch CachedSurfaceRevalidation.decide(
             cachedID: framebufferSurfaces[key].map(IOSurfaceGetID), liveID: surface.map(IOSurfaceGetID)
         ) {
@@ -400,16 +435,16 @@ actor FrameCapture {
         let key = ObjectIdentifier(descriptor)
         callbackUUIDs[key] = uuid
 
-        let frameCallback: ScreenFrameCallback = { [weak self] in
-            guard let self else { return }
-            self.assumeIsolated { $0.captureFrame() }
+        let frameCallback: ScreenFrameCallback = { [weak self, weak descriptor] in
+            guard let self, let descriptor else { return }
+            self.assumeIsolated { $0.captureFromFrameCallback(descriptor: descriptor) }
         }
         let surfacesChangedCallback: ScreenSurfacesChangedCallback = {
             [weak self, weak descriptor] unmasked, masked in
             guard let self, let descriptor else { return }
             self.assumeIsolated {
                 $0.updateSurface(for: descriptor, unmasked: unmasked, masked: masked)
-                $0.captureFrame(allowLiveRevalidation: false)
+                $0.captureFrame(trigger: .surfaceCallback, allowLiveRevalidation: false)
             }
         }
         let propertiesChangedCallback: ScreenPropertiesChangedCallback = { [weak self, weak descriptor] properties in
@@ -422,7 +457,7 @@ actor FrameCapture {
                     $0.screenMetadata[key] = SimDisplayMetadata.read(from: descriptor)
                 }
                 $0.invalidatePick()
-                $0.captureFrame(force: true)
+                $0.captureFrame(trigger: .propertiesCallback, force: true)
                 // Older SimScreen properties can lag Duo's active flag; query
                 // CoreDevice immediately instead of waiting for the idle poll.
                 $0.requestDisplayInfoRefresh()
@@ -481,7 +516,7 @@ actor FrameCapture {
         let nowNs = nowNanoseconds()
         let now = ContinuousClock.now
         let idleRefreshDue = (now - self.lastCaptureTime) >= Self.idleInterval
-        self.captureFrame(force: idleRefreshDue)
+        self.captureFrame(trigger: .poll, force: idleRefreshDue)
         guard let lastLiveRevalidationNs else { return }
         // A cached miss cannot establish that the surface is still missing.
         let healthCheckNs = min(nowNs, lastLiveRevalidationNs)
@@ -515,12 +550,45 @@ actor FrameCapture {
         (count: pickCount, sumNs: pickSumNs, maxNs: pickMaxNs)
     }
 
-    func frameCounts() -> (screen: UInt64, idle: UInt64) {
-        (screen: screenFrameCount, idle: idleFrameCount)
+    /// Elapsed snapshot time includes GPU surface fences, conversion, allocation and fallback.
+    func snapshotTimings() -> (count: UInt64, sumNs: UInt64, maxNs: UInt64, over16Ms: UInt64, failures: UInt64) {
+        (snapshotCount, snapshotSumNs, snapshotMaxNs, snapshotOver16Ms, snapshotFailures)
     }
 
-    private func captureFrame(force: Bool = false, allowLiveRevalidation: Bool = true) {
-        guard displayConfigurationReady else { return }
+    func frameCounts() -> (screen: UInt64, idle: UInt64, source: CaptureSourceDiagnostics) {
+        (screen: screenFrameCount, idle: idleFrameCount, source: source)
+    }
+
+    private func captureFromFrameCallback(descriptor: NSObject) {
+        let key = ObjectIdentifier(descriptor)
+        if let targetScreenID = fixedScreenID ?? authoritativeDisplay?.screenID,
+           let callbackScreenID = screenMetadata[key]?.screenID {
+            if callbackScreenID == targetScreenID { source.selectedFrameCallbacks &+= 1 }
+            else { source.otherFrameCallbacks &+= 1 }
+        } else if let selectedKey = bestSurfaceKey {
+            if key == selectedKey { source.selectedFrameCallbacks &+= 1 }
+            else { source.otherFrameCallbacks &+= 1 }
+        } else {
+            source.unknownFrameCallbacks &+= 1
+        }
+        captureFrame(trigger: .frameCallback)
+    }
+
+    func sourceDiagnostics() -> CaptureSourceDiagnostics { source }
+
+    private var benchmarkSuspended = false
+    func setBenchmarkSuspended(_ suspended: Bool) { benchmarkSuspended = suspended }
+
+    private func captureFrame(trigger: CaptureTrigger = .other, force: Bool = false,
+                              allowLiveRevalidation: Bool = true) {
+        switch trigger {
+        case .frameCallback: source.frameCallbacks &+= 1
+        case .surfaceCallback: source.surfaceCallbacks &+= 1
+        case .propertiesCallback: source.propertyCallbacks &+= 1
+        case .poll: source.pollCalls &+= 1
+        case .other: break
+        }
+        guard displayConfigurationReady, !benchmarkSuspended else { return }
         let entryNs = DispatchTime.now().uptimeNanoseconds
         if captureLastEntryNs > 0 {
             let gapNs = entryNs - captureLastEntryNs
@@ -538,7 +606,10 @@ actor FrameCapture {
         pickCount += 1
         pickSumNs += pickNs
         if pickNs > pickMaxNs { pickMaxNs = pickNs }
-        guard let (key, surface) = picked else { return }
+        guard let (key, surface) = picked else {
+            source.missingSurfaceSkips &+= 1
+            return
+        }
         if let lostNs = surfaceWatch.surfaceFound(atNanoseconds: nowNanoseconds()) {
             print("[capture] Framebuffer surface is back after \(Self.seconds(lostNs))")
         }
@@ -555,7 +626,10 @@ actor FrameCapture {
         // see the `idleInterval` doc-comment for why that matters.
         let seed = IOSurfaceGetSeed(surface)
         let seedChanged = lastSeeds[key] != seed
-        if frameCount > 0, !seedChanged, !displayChanged, !force { return }
+        if frameCount > 0, !seedChanged, !displayChanged, !force {
+            source.unchangedSeedSkips &+= 1
+            return
+        }
 
         let w = IOSurfaceGetWidth(surface)
         let h = IOSurfaceGetHeight(surface)
@@ -577,7 +651,18 @@ actor FrameCapture {
         // the receiver jitter buffer. Host time is monotonic and reflects the
         // actual capture cadence.
         let timestamp = CMClockGetTime(CMClockGetHostTimeClock())
-        guard let copy = photocopier.copy(pb, maxDimension: snapshotMaxDimension) else { return }
+        let snapshotStart = DispatchTime.now().uptimeNanoseconds
+        let copied = photocopier.copy(pb, maxDimension: snapshotMaxDimension)
+        let snapshotNs = DispatchTime.now().uptimeNanoseconds - snapshotStart
+        if IOSurfaceGetSeed(surface) != seed { source.seedChangesDuringCopy &+= 1 }
+        snapshotCount &+= 1
+        snapshotSumNs &+= snapshotNs
+        snapshotMaxNs = max(snapshotMaxNs, snapshotNs)
+        if snapshotNs > 16_666_667 { snapshotOver16Ms &+= 1 }
+        guard let copy = copied else {
+            snapshotFailures &+= 1
+            return
+        }
         lastSeeds[key] = seed
         lastCaptureTime = .now
         capturedDisplay = display
@@ -591,6 +676,12 @@ actor FrameCapture {
             for notify in screenObservers.values { notify() }
         }
         frameCount += 1
+        switch trigger {
+        case .frameCallback, .surfaceCallback, .propertiesCallback: source.callbackFrames &+= 1
+        case .poll: source.pollFrames &+= 1
+        case .other: source.otherFrames &+= 1
+        }
+        if force { source.forcedFrames &+= 1 }
         if force { idleFrameCount += 1 } else { screenFrameCount += 1 }
         onFrame?(copy, timestamp, webRTCEncodeCanvasSize(),
                  CapturedScreenInfo(width: w, height: h, display: display, displayProfile: displayProfile, isActivePanel: panelActivity))
@@ -642,7 +733,11 @@ actor FrameCapture {
 
     func surfaceChangedForTesting(descriptor: NSObject, masked: IOSurface?) {
         updateSurface(for: descriptor, unmasked: nil, masked: masked)
-        captureFrame(allowLiveRevalidation: false)
+        captureFrame(trigger: .surfaceCallback, allowLiveRevalidation: false)
+    }
+
+    func frameCallbackForTesting(descriptor: NSObject) {
+        captureFromFrameCallback(descriptor: descriptor)
     }
 
     func pollSurfaceForTesting() {

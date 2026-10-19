@@ -157,6 +157,11 @@ describe("capture counts", () => {
       pickCount: null,
       pickSumMs: null,
       pickMaxMs: null,
+      snapshotCount: null,
+      snapshotSumMs: null,
+      snapshotMaxMs: null,
+      snapshotOver16Ms: null,
+      snapshotFailures: null,
       screenFrames: 900,
       idleFrames: 40,
       offeredFrames: null,
@@ -173,6 +178,7 @@ describe("capture counts", () => {
       sourceSubmitCount: null,
       sourceSubmitSumMs: null,
       sourceSubmitMaxMs: null,
+      idleRepeatSkips: null,
       cpuFallbacks: null,
       poolDrops: null,
       attempts: null,
@@ -209,6 +215,23 @@ describe("capture counts", () => {
 });
 
 describe("frame flow counts", () => {
+  test("keeps native shared encoder timing separate from libwebrtc encode time", () => {
+    const stats = readSenderStats({ sessions: [], sharedEncoderFlow: {
+      submitted: 60, coalesced: 30, completed: 59, failed: 0, encodeSumMs: 900,
+      queueWaitSumMs: 150, taskDispatchSumMs: 5, completionDispatchSumMs: "invalid",
+      vtCalls: 60, vtSubmitSumMs: 4, vtSubmitToCallbackSumMs: 850, vtCallbackToResumeSumMs: 12,
+      vtRebuildCount: 1, vtRebuildSumMs: 20, vtExtractSumMs: 3, vtTimeouts: 0,
+    } });
+    expect(stats.sharedEncoderFlow?.vtCalls).toBe(60);
+    expect(stats.sharedEncoderFlow?.vtSubmitToCallbackSumMs).toBe(850);
+    expect(stats.sharedEncoderFlow?.vtCallbackToResumeSumMs).toBe(12);
+    expect(stats.sharedEncoderFlow?.submitted).toBe(60);
+    expect(stats.sharedEncoderFlow?.coalesced).toBe(30);
+    expect(stats.sharedEncoderFlow?.encodeSumMs).toBe(900);
+    expect(stats.sharedEncoderFlow?.completionDispatchSumMs).toBeNull();
+    expect(readSenderStats({ sessions: [] }).sharedEncoderFlow).toBeNull();
+  });
+
   test("keeps capture deliveries and paced submissions as distinct stages", () => {
     const stats = readSenderStats({
       sessions: [],
@@ -217,6 +240,14 @@ describe("frame flow counts", () => {
 
     expect(stats.capture?.offeredFrames).toBe(880);
     expect(stats.capture?.forwardedFrames).toBe(300);
+  });
+
+  test("reports identical Duo panel frames skipped before source submission", () => {
+    const stats = readSenderStats({ sessions: [], capture: {
+      screenFrames: 0, idleFrames: 5, idleRepeatSkips: 55, forwardedFrames: 5,
+    } });
+    expect(stats.capture?.idleRepeatSkips).toBe(55);
+    expect(stats.capture?.forwardedFrames).toBe(5);
   });
 
   test("reports one shared H.264 encode counter for all viewers", () => {
@@ -262,6 +293,7 @@ describe("viewer resize and shared canvas", () => {
     expect(stats.viewerResize).toEqual({ backend: "metal", submitted: 60, passedThrough: 60, scaled: 0 });
     expect(stats.sharedCanvas).toEqual({
       width: 640, height: 1392, scale: 1, step: 0, steps: 0, starvedRecoveries: null, lowLatencyFallbacks: null,
+      rateControlMode: null,
     });
   });
 
@@ -272,6 +304,15 @@ describe("viewer resize and shared canvas", () => {
     });
     expect(stats.sharedCanvas?.starvedRecoveries).toBe(2);
     expect(stats.sharedCanvas?.lowLatencyFallbacks).toBe(1);
+  });
+
+  test("reports explicit default rate control without inventing a fallback", () => {
+    const stats = readSenderStats({ sessions: [], sharedCanvas: {
+      width: 640, height: 1392, scale: 1, step: 0, steps: 0,
+      lowLatencyFallbacks: 0, rateControlMode: "default",
+    } });
+    expect(stats.sharedCanvas?.rateControlMode).toBe("default");
+    expect(stats.sharedCanvas?.lowLatencyFallbacks).toBe(0);
   });
 
   test("reports null for an absent or malformed shared canvas", () => {
@@ -311,4 +352,30 @@ describe("senderSessionForViewer", () => {
     expect(senderSessionForViewer(sessions, ours.sessionId)?.codec).toBe("H264");
     expect(senderSessionForViewer(sessions, "33333333-3333-4333-8333-333333333333")).toBeNull();
   });
+});
+
+test("normalizes snapshot timings and preserves absent counters as unknown", () => {
+  const capture = readSenderStats({ sessions: [], capture: { screenFrames: 1, idleFrames: 0,
+    snapshotCount: 2, snapshotSumMs: 4, snapshotMaxMs: 3, snapshotOver16Ms: 0, snapshotFailures: 0,
+  } }).capture;
+  expect(capture).toMatchObject({ snapshotCount: 2, snapshotSumMs: 4,
+    snapshotMaxMs: 3, snapshotOver16Ms: 0, snapshotFailures: 0 });
+  expect(readSenderStats({ sessions: [], capture: { screenFrames: 0, idleFrames: 0 } }).capture?.snapshotCount).toBeNull();
+});
+
+
+test("preserves capture event provenance without treating missing counters as zero", () => {
+  const source = readSenderStats({ sessions: [], capture: {
+    screenFrames: 3, idleFrames: 0, source: {
+      pollCalls: 6, pollFrames: 2, callbackFrames: 1, unchangedSeedSkips: 4,
+      missingSurfaceSkips: "unknown", liveSurfaceChanges: 2, callbackSurfaceChanges: 1,
+      unrecognizedField: 99,
+    },
+  } }).capture?.source;
+  expect(source).toMatchObject({ pollCalls: 6, pollFrames: 2, callbackFrames: 1,
+    unchangedSeedSkips: 4, missingSurfaceSkips: null, liveSurfaceChanges: 2,
+    callbackSurfaceChanges: 1, frameCallbacks: null });
+  expect(source).not.toHaveProperty("unrecognizedField");
+  expect(readSenderStats({ sessions: [], capture: { screenFrames: 0, idleFrames: 0 } }).capture?.source)
+    .toBeUndefined();
 });

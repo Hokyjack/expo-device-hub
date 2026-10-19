@@ -3,12 +3,28 @@ import CoreVideo
 import CoreMedia
 import VideoToolbox
 
+struct H264RuntimeIdentity: Sendable {
+    let id: String?
+    let hardware: Bool?
+}
+
 /// Real-time H.264 encoder backed by `VTCompressionSession`, producing AVCC
 /// (length-prefixed NAL) output for the `/stream.avcc` endpoint.
 ///
 /// Encoding suspends until VideoToolbox returns a sample. FrameCapture owns the
 /// IOSurface snapshot, while CaptureConsumer bounds each subscriber to the
 /// newest pending frame so a slow encoder cannot stall capture or other viewers.
+struct H264BenchmarkProbe: Sendable {
+    var calls: UInt64 = 0
+    var submitSumMs: Double = 0
+    var submitToCallbackSumMs: Double = 0
+    var callbackToResumeSumMs: Double = 0
+    var rebuildCount: UInt64 = 0
+    var rebuildSumMs: Double = 0
+    var extractSumMs: Double = 0
+    var timeouts: UInt64 = 0
+}
+
 actor H264Encoder {
     private static let encodeTimeout = DispatchTimeInterval.milliseconds(500)
 
@@ -25,7 +41,9 @@ actor H264Encoder {
         enum Kind: Sendable { case keyframe, delta }
     }
 
+    private(set) var benchmarkProbe = H264BenchmarkProbe()
     private var session: VTCompressionSession?
+    private(set) var runtimeIdentity: H264RuntimeIdentity?
     private var width: Int32 = 0
     private var height: Int32 = 0
     private var fps: Int32
@@ -144,11 +162,12 @@ actor H264Encoder {
         presentationTimeStamp: CMTime,
         frameProperties: NSDictionary?
     ) async -> CMSampleBuffer? {
-        await withCheckedContinuation { continuation in
+        let submittedNs = DispatchTime.now().uptimeNanoseconds
+        let result: BenchmarkEncodeSample = await withCheckedContinuation { continuation in
             let completion = EncodeCompletion(continuation)
             let timeout = DispatchWorkItem {
                 streamDiagnosticLog("[stream:h264] encode timed out")
-                completion.resume(returning: nil)
+                completion.resume(returning: nil, timedOut: true)
             }
             completion.setTimeout(timeout)
             DispatchQueue.global(qos: .userInteractive).asyncAfter(
@@ -169,10 +188,16 @@ actor H264Encoder {
                 }
                 completion.resume(returning: sb)
             }
+            benchmarkProbe.submitSumMs += Double(DispatchTime.now().uptimeNanoseconds - submittedNs) / 1_000_000
             if status != noErr {
                 completion.resume(returning: nil)
             }
         }
+        benchmarkProbe.calls &+= 1
+        benchmarkProbe.submitToCallbackSumMs += Double(result.completedNs - submittedNs) / 1_000_000
+        benchmarkProbe.callbackToResumeSumMs += Double(DispatchTime.now().uptimeNanoseconds - result.completedNs) / 1_000_000
+        if result.timedOut { benchmarkProbe.timeouts &+= 1 }
+        return result.sample
     }
 
     func update(fps nextFps: Int, bitrate nextBitrate: Int) {
@@ -203,6 +228,7 @@ actor H264Encoder {
         if let session {
             VTCompressionSessionInvalidate(session)
             self.session = nil
+            runtimeIdentity = nil
         }
         emittedDescription = false
         streamDiagnosticLog("[stream:h264] settings updated fps=\(fps) bitrate=\(bitrate)")
@@ -212,15 +238,23 @@ actor H264Encoder {
         if let session {
             VTCompressionSessionInvalidate(session)
             self.session = nil
+            runtimeIdentity = nil
         }
     }
 
     // MARK: - private
 
     private func rebuildSession() {
+        let benchmarkStartedNs = DispatchTime.now().uptimeNanoseconds
+        defer {
+            benchmarkProbe.rebuildCount &+= 1
+            benchmarkProbe.rebuildSumMs += Double(DispatchTime.now().uptimeNanoseconds - benchmarkStartedNs) / 1_000_000
+        }
+        runtimeIdentity = nil
         if let session {
             VTCompressionSessionInvalidate(session)
             self.session = nil
+            runtimeIdentity = nil
         }
 
         // Request VideoToolbox's low-latency rate-control pipeline. Both modes
@@ -287,10 +321,22 @@ actor H264Encoder {
             streamDiagnosticLog("[stream:h264] prepare failed with status \(prepareStatus)")
         }
         session = sess
+        var idValue: CFTypeRef?
+        var hardwareValue: CFTypeRef?
+        let idStatus = VTSessionCopyProperty(sess, key: kVTCompressionPropertyKey_EncoderID,
+                                             allocator: kCFAllocatorDefault, valueOut: &idValue)
+        let hardwareStatus = VTSessionCopyProperty(sess, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
+                                                   allocator: kCFAllocatorDefault, valueOut: &hardwareValue)
+        runtimeIdentity = H264RuntimeIdentity(
+            id: idStatus == noErr ? idValue as? String : nil,
+            hardware: hardwareStatus == noErr ? (hardwareValue as? NSNumber)?.boolValue : nil
+        )
         emittedDescription = false
     }
 
     private func extract(from sample: CMSampleBuffer) throws -> Encoded {
+        let benchmarkStartedNs = DispatchTime.now().uptimeNanoseconds
+        defer { benchmarkProbe.extractSumMs += Double(DispatchTime.now().uptimeNanoseconds - benchmarkStartedNs) / 1_000_000 }
         let isKeyframe = !notSync(sample)
         guard let dataBuf = CMSampleBufferGetDataBuffer(sample) else {
             throw Errors.invalidSampleBuffer
@@ -389,12 +435,18 @@ actor H264Encoder {
     }
 }
 
+private struct BenchmarkEncodeSample: @unchecked Sendable {
+    let sample: CMSampleBuffer?
+    let completedNs: UInt64
+    let timedOut: Bool
+}
+
 private final class EncodeCompletion: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<CMSampleBuffer?, Never>?
+    private var continuation: CheckedContinuation<BenchmarkEncodeSample, Never>?
     private var timeout: DispatchWorkItem?
 
-    init(_ continuation: CheckedContinuation<CMSampleBuffer?, Never>) {
+    init(_ continuation: CheckedContinuation<BenchmarkEncodeSample, Never>) {
         self.continuation = continuation
     }
 
@@ -404,7 +456,8 @@ private final class EncodeCompletion: @unchecked Sendable {
         lock.unlock()
     }
 
-    func resume(returning sampleBuffer: CMSampleBuffer?) {
+    func resume(returning sampleBuffer: CMSampleBuffer?, timedOut: Bool = false) {
+        let completedNs = DispatchTime.now().uptimeNanoseconds
         lock.lock()
         let continuation = self.continuation
         self.continuation = nil
@@ -412,6 +465,6 @@ private final class EncodeCompletion: @unchecked Sendable {
         self.timeout = nil
         lock.unlock()
         timeout?.cancel()
-        continuation?.resume(returning: sampleBuffer)
+        continuation?.resume(returning: BenchmarkEncodeSample(sample: sampleBuffer, completedNs: completedNs, timedOut: timedOut))
     }
 }

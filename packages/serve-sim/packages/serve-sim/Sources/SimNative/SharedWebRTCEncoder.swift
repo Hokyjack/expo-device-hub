@@ -8,6 +8,28 @@ typealias SharedWebRTCEncodeFrame = @Sendable (CVPixelBuffer, Bool, Int, Int) as
 
 private typealias EncoderCallback = (LKRTCEncodedImage, any LKRTCCodecSpecificInfo) -> Bool
 
+/// Cumulative wall-clock timings; these include asynchronous waits, not CPU usage.
+struct SharedEncoderFlowStats: Codable {
+    var submitted: UInt64 = 0
+    var coalesced: UInt64 = 0
+    var completed: UInt64 = 0
+    var failed: UInt64 = 0
+    var queueWaitSumMs: Double = 0
+    var taskDispatchSumMs: Double = 0
+    var encodeSumMs: Double = 0
+    var encodeMaxMs: Double = 0
+    var completionDispatchSumMs: Double = 0
+    var deliverySumMs: Double = 0
+    var vtCalls: UInt64 = 0
+    var vtSubmitSumMs: Double = 0
+    var vtSubmitToCallbackSumMs: Double = 0
+    var vtCallbackToResumeSumMs: Double = 0
+    var vtRebuildCount: UInt64 = 0
+    var vtRebuildSumMs: Double = 0
+    var vtExtractSumMs: Double = 0
+    var vtTimeouts: UInt64 = 0
+}
+
 /// Per-proxy counters, so a peer that never sends video shows which step it is missing.
 struct SharedEncoderPeerStats: Codable {
     let peer: Int
@@ -96,6 +118,12 @@ final class SharedWebRTCEncoderFactory: NSObject, LKRTCVideoEncoderFactory {
         shared.peerStats()
     }
 
+    func flowStats() -> SharedEncoderFlowStats { shared.flowStats() }
+
+    func rateControlMode() -> String { shared.rateControlMode() }
+
+    func liveIdentity() -> H264RuntimeIdentity? { shared.liveIdentity() }
+
     func stop() {
         shared.stop()
     }
@@ -123,11 +151,13 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         let buffer: CVPixelBuffer
         let forceIDR: Bool
         let bitrate: Int
+        let queuedNs: UInt64
     }
 
     private let queue = DispatchQueue(label: "webrtc-shared-h264", qos: .userInteractive)
     private let queueKey = DispatchSpecificKey<Bool>()
     private let encoder: H264Encoder
+    private let lowLatencyRateControl: Bool
     private let encodeFrame: SharedWebRTCEncodeFrame
     private var policy: SharedH264Policy
     private var callbacks: [Int: (EncoderCallback, LKRTCH264PacketizationMode)] = [:]
@@ -146,10 +176,12 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     private var stopped = false
     private var encodedFrames: UInt64 = 0
     private var fallbacks: UInt64 = 0
+    private var liveEncoderIdentity: H264RuntimeIdentity?
     private var fps: Int
     private var resolution: SharedResolutionPolicy
     private var scaleObserver: ((Double) -> Void)?
     private var peers: [Int: SharedEncoderPeerStats] = [:]
+    private var flow = SharedEncoderFlowStats()
 
     private func stat(_ peer: Int, _ update: (inout SharedEncoderPeerStats) -> Void) {
         var value = peers[peer] ?? SharedEncoderPeerStats(peer: peer)
@@ -159,6 +191,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
 
     init(bitrate: Int, fps: Int, lowLatencyRateControl: Bool = true, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
         self.fps = fps
+        self.lowLatencyRateControl = lowLatencyRateControl
         encoder = H264Encoder(fps: fps, bitrate: bitrate,
                               constrainedBaseline: true, dynamicBitrate: true,
                               lowLatencyRateControl: lowLatencyRateControl)
@@ -253,6 +286,14 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         onQueue { peers.values.sorted { $0.peer < $1.peer } }
     }
 
+    func flowStats() -> SharedEncoderFlowStats { onQueue { flow } }
+
+    func rateControlMode() -> String {
+        onQueue { lowLatencyRateControl && fallbacks == 0 ? "low-latency" : "default" }
+    }
+
+    func liveIdentity() -> H264RuntimeIdentity? { onQueue { liveEncoderIdentity } }
+
     /// Queue-confined. Feeds the slowest peer's bitrate to the resolution policy.
     private func observeResolution() {
         let now = DispatchTime.now().uptimeNanoseconds
@@ -309,6 +350,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
             packetizationModes.removeAll()
             queuedFrame = nil
             backlog.stop()
+            liveEncoderIdentity = nil
             pending.removeAll()
             completed.removeAll()
             completedOrder.removeAll()
@@ -383,12 +425,14 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
             )
             pending[timestamp] = metadata
             let next = QueuedFrame(timestamp: timestamp, buffer: buffer,
-                                   forceIDR: forceIDR, bitrate: policy.bitrate)
+                                   forceIDR: forceIDR, bitrate: policy.bitrate,
+                                   queuedNs: DispatchTime.now().uptimeNanoseconds)
             switch submission {
             case .start:
                 startEncoding(next)
             case let .queued(replaced):
                 if let replaced {
+                    flow.coalesced &+= 1
                     pending.removeValue(forKey: replaced)
                 }
                 queuedFrame = next
@@ -402,13 +446,43 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     private func startEncoding(_ frame: QueuedFrame) {
         let timestamp = frame.timestamp
         let fps = self.fps
+        let scheduledNs = DispatchTime.now().uptimeNanoseconds
+        flow.submitted &+= 1
+        flow.queueWaitSumMs += Double(scheduledNs - frame.queuedNs) / 1_000_000
         Task { [weak self] in
             guard let self, !Task.isCancelled else { return }
+            let startedNs = DispatchTime.now().uptimeNanoseconds
             let output = await encodeFrame(frame.buffer, frame.forceIDR, frame.bitrate, fps)
-            queue.async { self.complete(timestamp: timestamp, output: output) }
+            let finishedNs = DispatchTime.now().uptimeNanoseconds
+            queue.async {
+                self.flow.completed &+= 1
+                if output == nil { self.flow.failed &+= 1 }
+                self.flow.taskDispatchSumMs += Double(startedNs - scheduledNs) / 1_000_000
+                let encodeMs = Double(finishedNs - startedNs) / 1_000_000
+                self.flow.encodeSumMs += encodeMs
+                self.flow.encodeMaxMs = max(self.flow.encodeMaxMs, encodeMs)
+                self.flow.completionDispatchSumMs += Double(DispatchTime.now().uptimeNanoseconds - finishedNs) / 1_000_000
+                let deliveryNs = DispatchTime.now().uptimeNanoseconds
+                self.complete(timestamp: timestamp, output: output)
+                self.flow.deliverySumMs += Double(DispatchTime.now().uptimeNanoseconds - deliveryNs) / 1_000_000
+            }
             // After delivery, so the frame does not wait for it. Reads can land out of order.
             let fallbacks = await encoder.lowLatencyFallbacks
-            queue.async { self.fallbacks = max(self.fallbacks, fallbacks) }
+            let identity = await encoder.runtimeIdentity
+            let probe = await encoder.benchmarkProbe
+            queue.async {
+                guard !self.stopped else { return }
+                self.fallbacks = max(self.fallbacks, fallbacks)
+                self.liveEncoderIdentity = identity
+                self.flow.vtCalls = probe.calls
+                self.flow.vtSubmitSumMs = probe.submitSumMs
+                self.flow.vtSubmitToCallbackSumMs = probe.submitToCallbackSumMs
+                self.flow.vtCallbackToResumeSumMs = probe.callbackToResumeSumMs
+                self.flow.vtRebuildCount = probe.rebuildCount
+                self.flow.vtRebuildSumMs = probe.rebuildSumMs
+                self.flow.vtExtractSumMs = probe.extractSumMs
+                self.flow.vtTimeouts = probe.timeouts
+            }
         }
     }
 
@@ -426,11 +500,13 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
             avcc: output.avcc, parameterSets: output.parameterSets,
             keyframe: output.kind == .keyframe
         ) else {
+            // A nil encoder result was counted at completion; conversion can also reject a result.
+            if output != nil { flow.failed &+= 1 }
             policy.requestIDR()
             if let queuedFrame {
                 self.queuedFrame = QueuedFrame(
                     timestamp: queuedFrame.timestamp, buffer: queuedFrame.buffer,
-                    forceIDR: true, bitrate: queuedFrame.bitrate
+                    forceIDR: true, bitrate: queuedFrame.bitrate, queuedNs: queuedFrame.queuedNs
                 )
             }
             return

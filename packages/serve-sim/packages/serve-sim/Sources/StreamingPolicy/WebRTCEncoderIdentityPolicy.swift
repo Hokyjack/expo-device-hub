@@ -31,7 +31,7 @@ public enum WebRTCEncoderIdentityPolicy {
         guard StreamCodecPolicy.isH264(codec) else {
             return Identity(id: nil, hardware: false, codec: codec, probe: false)
         }
-        // Forced H.264 skips the probe, and nothing else can say which encoder runs.
+        // Without live metadata, forced H.264 has no probe identity to report.
         guard h264Probed else {
             return Identity(id: nil, hardware: nil, codec: nil, probe: false)
         }

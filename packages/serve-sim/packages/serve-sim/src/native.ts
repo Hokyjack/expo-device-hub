@@ -52,6 +52,7 @@ interface SimCaptureHandle {
   start(): Promise<void>;
   suspendForReboot(): Promise<void>;
   resumeAfterReboot(): Promise<void>;
+  benchmarkRecording(mode: string): Promise<string>;
   startRecording(outputDirectory: string): Promise<void>;
   stopRecording(): Promise<string>;
   updateStreamSettings(
@@ -366,6 +367,10 @@ export class NativeCapture {
 
   resumeAfterReboot(): Promise<void> {
     return this.handle.resumeAfterReboot();
+  }
+
+  benchmarkRecording(mode: string): Promise<string> {
+    return this.handle.benchmarkRecording(mode);
   }
 
   startRecording(outputDirectory: string): Promise<void> {

@@ -38,7 +38,9 @@ final class SharedWebRTCEncoderTests: XCTestCase {
                                          codecSpecificInfo: nil, frameTypes: []), 0)
             wait(for: [delivered], timeout: 5)
         }
+        XCTAssertEqual(factory.rateControlMode(), "default")
         XCTAssertEqual(factory.lowLatencyFallbacks(), 0)
+        XCTAssertNotNil(factory.liveIdentity())
     }
 
     /// libwebrtc releases and re-initializes an encoder when it reconfigures a stream. A proxy

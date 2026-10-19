@@ -81,6 +81,12 @@ struct WebRTCCaptureCounts: Codable {
     let pickCount: UInt64
     let pickSumMs: Double
     let pickMaxMs: Double
+    let snapshotCount: UInt64
+    let snapshotSumMs: Double
+    let snapshotMaxMs: Double
+    let snapshotOver16Ms: UInt64
+    let snapshotFailures: UInt64
+    let source: CaptureSourceDiagnostics?
     let screenFrames: UInt64
     let idleFrames: UInt64
     /// Offered frames are capture deliveries, including the 5 FPS idle refresh. Forwarded frames
@@ -105,6 +111,7 @@ struct WebRTCCaptureCounts: Codable {
     let sourceSubmitCount: UInt64?
     let sourceSubmitSumMs: Double?
     let sourceSubmitMaxMs: Double?
+    let idleRepeatSkips: UInt64?
     let cpuFallbacks: UInt64
     let poolDrops: UInt64
     let attempts: UInt64
@@ -126,8 +133,8 @@ struct WebRTCEncoderIdentity: Codable {
     let hardware: Bool?
     /// One answer for the whole report, even when sessions disagree.
     let codec: String?
-    /// The H.264 answer comes from a test session, because the live encoder does not report
-    /// itself. The VP8 and VP9 answers follow from libwebrtc encoding them in software.
+    /// True only while using the startup probe; shared H.264 reports the actual VT session once
+    /// available. VP8 and VP9 follow from libwebrtc encoding them in software.
     let probe: Bool
 }
 
@@ -142,6 +149,7 @@ struct WebRTCSharedCanvas: Codable {
     let starvedRecoveries: UInt64
     /// Times the shared encoder fell back from low-latency to default rate control.
     let lowLatencyFallbacks: UInt64
+    let rateControlMode: String
 }
 
 struct WebRTCSenderStatsReport: Codable {
@@ -151,6 +159,7 @@ struct WebRTCSenderStatsReport: Codable {
     let viewerResize: ViewerResizeCounters?
     let sharedCanvas: WebRTCSharedCanvas?
     let sharedEncoderPeers: [SharedEncoderPeerStats]?
+    let sharedEncoderFlow: SharedEncoderFlowStats?
 }
 
 private final class WebRTCSignalingCompletion: @unchecked Sendable {
@@ -310,7 +319,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         let encoderFactory = SharedWebRTCEncoderFactory(
             bitrate: targetBitrate, fps: normalizedMaxFps,
             h264Allowed: { Self.detectedH264Support.allowed },
-            // The capability probe selects the VM policy, not the live encoder identity.
+            // The capability probe selects the VM policy; live identity is reported separately.
             // @ref LLP 0002#capture-and-frame-flow — scope the default request to paravirtualized Duo panels.
             lowLatencyRateControl: WebRTCH264RateControlPolicy.prefersLowLatency(
                 fixedPanel: fixedPanel, probeEncoderID: Self.detectedH264Support.encoderID
@@ -592,6 +601,10 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     func encoderIdentity(liveCodecs: [String]) -> WebRTCEncoderIdentity {
+        if let codec = StreamCodecPolicy.dominant(liveCodecs), StreamCodecPolicy.isH264(codec),
+           let live = sharedEncoderFactory.liveIdentity() {
+            return WebRTCEncoderIdentity(id: live.id, hardware: live.hardware, codec: codec, probe: false)
+        }
         let identity = WebRTCEncoderIdentityPolicy.identity(
             liveCodecs: liveCodecs,
             h264EncoderID: h264WebRTCSupport.encoderID,
@@ -621,6 +634,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         let sourceSubmitCount: UInt64
         let sourceSubmitSumNs: UInt64
         let sourceSubmitMaxNs: UInt64
+        let idleRepeatSkips: UInt64?
     }
 
     func frameFlowCounts() -> FrameFlowCounts {
@@ -633,6 +647,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             pumpTimerTicks, pumpTimerLateSumNs, pumpTimerLateMaxNs,
             sourceSubmitCount, sourceSubmitSumNs, sourceSubmitMaxNs
         )
+        let idleRepeatSkips = panelCadence?.skippedRepeats
         frameLock.unlock()
         return FrameFlowCounts(
             offered: offered, forwarded: forwarded, pumpRestarts: restarts,
@@ -640,7 +655,8 @@ final class WebRTCPublisher: @unchecked Sendable {
             canvasMismatchDrops: mismatches, pumpDeferrals: deferrals, pumpRepeats: repeats,
             unchangedFrames: unchanged,
             pumpTimerTicks: timing.0, pumpTimerLateSumNs: timing.1, pumpTimerLateMaxNs: timing.2,
-            sourceSubmitCount: timing.3, sourceSubmitSumNs: timing.4, sourceSubmitMaxNs: timing.5
+            sourceSubmitCount: timing.3, sourceSubmitSumNs: timing.4, sourceSubmitMaxNs: timing.5,
+            idleRepeatSkips: idleRepeatSkips
         )
     }
 
@@ -652,13 +668,16 @@ final class WebRTCPublisher: @unchecked Sendable {
         sharedEncoderFactory.peerStats()
     }
 
+    func sharedEncoderFlowStats() -> SharedEncoderFlowStats { sharedEncoderFactory.flowStats() }
+
     func sharedCanvasStatus() -> WebRTCSharedCanvas {
         let canvas = queue.sync { encodeCanvas }
         let resolution = sharedEncoderFactory.resolutionStatus()
         return WebRTCSharedCanvas(width: canvas.width, height: canvas.height,
                                   scale: resolution.scale, step: resolution.step, steps: resolution.changes,
                                   starvedRecoveries: sharedEncoderFactory.starvedRecoveries(),
-                                  lowLatencyFallbacks: sharedEncoderFactory.lowLatencyFallbacks())
+                                  lowLatencyFallbacks: sharedEncoderFactory.lowLatencyFallbacks(),
+                                  rateControlMode: sharedEncoderFactory.rateControlMode())
     }
 
     /// The observer runs on the publisher queue with the current canvas, then on each change.
@@ -1679,8 +1698,8 @@ final class WebRTCPublisher: @unchecked Sendable {
             encoding.scaleResolutionDownBy = NSNumber(value: scaleResolutionDownBy)
         }
         parameters.encodings = encodings
-        // Balanced spends some of a shortfall on frame rate. Holding frame rate outright takes
-        // a 1206-wide surface to 300x654, where UI text is unreadable.
+        // Keep shared H.264 resolution under the shared controller while allowing
+        // libwebrtc to reduce frame rate when it detects encoding overload.
         parameters.degradationPreference = NSNumber(value: (
             sharedH264 ? LKRTCDegradationPreference.maintainResolution : .balanced
         ).rawValue)

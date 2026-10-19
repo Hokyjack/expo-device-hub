@@ -32,11 +32,39 @@ export interface SenderStreamStats {
   levelMaxLongEdge: number | null;
 }
 
+/** Capture events only; these counters do not measure app draws or compositor presentation. */
+export interface CaptureSourceDiagnostics {
+  frameCallbacks: number | null;
+  selectedFrameCallbacks: number | null;
+  otherFrameCallbacks: number | null;
+  unknownFrameCallbacks: number | null;
+  surfaceCallbacks: number | null;
+  propertyCallbacks: number | null;
+  pollCalls: number | null;
+  unchangedSeedSkips: number | null;
+  missingSurfaceSkips: number | null;
+  callbackFrames: number | null;
+  pollFrames: number | null;
+  otherFrames: number | null;
+  forcedFrames: number | null;
+  liveSurfaceReads: number | null;
+  liveSurfaceChanges: number | null;
+  callbackSurfaceChanges: number | null;
+  seedChangesDuringCopy: number | null;
+}
+
 export interface CaptureCounts {
+  source?: CaptureSourceDiagnostics;
   rebooting?: boolean;
   pickCount: number | null;
   pickSumMs: number | null;
   pickMaxMs: number | null;
+  /** Snapshot wall time includes surface fences and pixel transfer, not just GPU compute. */
+  snapshotCount?: number | null;
+  snapshotSumMs?: number | null;
+  snapshotMaxMs?: number | null;
+  snapshotOver16Ms?: number | null;
+  snapshotFailures?: number | null;
   screenFrames: number;
   idleFrames: number;
   offeredFrames: number | null;
@@ -58,6 +86,7 @@ export interface CaptureCounts {
   sourceSubmitCount?: number | null;
   sourceSubmitSumMs?: number | null;
   sourceSubmitMaxMs?: number | null;
+  idleRepeatSkips?: number | null;
   cpuFallbacks: number | null;
   poolDrops?: number | null;
   attempts: number | null;
@@ -74,11 +103,11 @@ export interface CaptureCounts {
 /// What is known about the encoder behind the live sessions. `hardware: false` means a CPU
 /// encoder, which otherwise looks identical to a healthy one.
 export interface EncoderIdentity {
-  /// The H.264 encoder this host would use. Null when the live session is not H.264.
+  /// Live VT EncoderID, or the startup probe until live metadata is available.
   id: string | null;
   hardware: boolean | null;
   codec: string | null;
-  /// A test encode on this host, not the live encoder, which does not report itself.
+  /// True for a startup capability probe; false for live VT metadata or a known software codec.
   probe: boolean;
 }
 
@@ -94,6 +123,7 @@ export interface SharedCanvas {
   starvedRecoveries?: number | null;
   /** Times the shared encoder fell back from low-latency to default rate control. */
   lowLatencyFallbacks?: number | null;
+  rateControlMode?: "low-latency" | "default" | null;
 }
 
 export interface SenderStats {
@@ -105,6 +135,8 @@ export interface SenderStats {
   sharedCanvas?: SharedCanvas | null;
   /** Per-proxy shared encoder counters, passed through as reported. */
   sharedEncoderPeers?: Record<string, unknown>[] | null;
+  /** Native cumulative queue/encode timings in milliseconds; asynchronous wall time, not CPU. */
+  sharedEncoderFlow?: Record<string, number | null> | null;
 }
 
 export function senderSessionForViewer(
@@ -198,6 +230,7 @@ function readEncoderIdentity(raw: unknown): EncoderIdentity | null {
 
 export function readSenderStats(raw: unknown): SenderStats {
   if (!isRecord(raw) || !Array.isArray(raw.sessions)) return { sessions: [] };
+  const sharedEncoderFlow = raw.sharedEncoderFlow;
   return {
     sessions: raw.sessions.filter(isRecord).map(readSenderSession),
     capture: readCaptureCounts(raw.capture),
@@ -205,6 +238,14 @@ export function readSenderStats(raw: unknown): SenderStats {
     viewerResize: isRecord(raw.viewerResize) ? raw.viewerResize : null,
     sharedCanvas: readSharedCanvas(raw.sharedCanvas),
     sharedEncoderPeers: Array.isArray(raw.sharedEncoderPeers) ? raw.sharedEncoderPeers.filter(isRecord) : null,
+    sharedEncoderFlow: isRecord(sharedEncoderFlow)
+      ? Object.fromEntries([
+        "submitted", "coalesced", "completed", "failed", "queueWaitSumMs", "taskDispatchSumMs",
+        "encodeSumMs", "encodeMaxMs", "completionDispatchSumMs", "deliverySumMs",
+        "vtCalls", "vtSubmitSumMs", "vtSubmitToCallbackSumMs", "vtCallbackToResumeSumMs",
+        "vtRebuildCount", "vtRebuildSumMs", "vtExtractSumMs", "vtTimeouts",
+      ].map((key) => [key, maybeNumber(sharedEncoderFlow[key])]))
+      : null,
   };
 }
 
@@ -216,6 +257,8 @@ function readSharedCanvas(raw: unknown): SharedCanvas | null {
     width: width as number, height: height as number, scale: scale as number, step: step as number, steps: steps as number,
     starvedRecoveries: maybeNumber(raw.starvedRecoveries),
     lowLatencyFallbacks: maybeNumber(raw.lowLatencyFallbacks),
+    rateControlMode: raw.rateControlMode === "low-latency" || raw.rateControlMode === "default"
+      ? raw.rateControlMode : null,
   };
 }
 
@@ -235,6 +278,30 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     pickSumMs: maybeNumber(raw.pickSumMs),
     ...(typeof raw.rebooting === "boolean" ? { rebooting: raw.rebooting } : {}),
     pickMaxMs: maybeNumber(raw.pickMaxMs),
+    snapshotCount: maybeNumber(raw.snapshotCount),
+    snapshotSumMs: maybeNumber(raw.snapshotSumMs),
+    snapshotMaxMs: maybeNumber(raw.snapshotMaxMs),
+    snapshotOver16Ms: maybeNumber(raw.snapshotOver16Ms),
+    snapshotFailures: maybeNumber(raw.snapshotFailures),
+    ...(isRecord(raw.source) ? { source: {
+      frameCallbacks: maybeNumber(raw.source.frameCallbacks),
+      selectedFrameCallbacks: maybeNumber(raw.source.selectedFrameCallbacks),
+      otherFrameCallbacks: maybeNumber(raw.source.otherFrameCallbacks),
+      unknownFrameCallbacks: maybeNumber(raw.source.unknownFrameCallbacks),
+      surfaceCallbacks: maybeNumber(raw.source.surfaceCallbacks),
+      propertyCallbacks: maybeNumber(raw.source.propertyCallbacks),
+      pollCalls: maybeNumber(raw.source.pollCalls),
+      unchangedSeedSkips: maybeNumber(raw.source.unchangedSeedSkips),
+      missingSurfaceSkips: maybeNumber(raw.source.missingSurfaceSkips),
+      callbackFrames: maybeNumber(raw.source.callbackFrames),
+      pollFrames: maybeNumber(raw.source.pollFrames),
+      otherFrames: maybeNumber(raw.source.otherFrames),
+      forcedFrames: maybeNumber(raw.source.forcedFrames),
+      liveSurfaceReads: maybeNumber(raw.source.liveSurfaceReads),
+      liveSurfaceChanges: maybeNumber(raw.source.liveSurfaceChanges),
+      callbackSurfaceChanges: maybeNumber(raw.source.callbackSurfaceChanges),
+      seedChangesDuringCopy: maybeNumber(raw.source.seedChangesDuringCopy),
+    } } : {}),
     screenFrames,
     idleFrames,
     offeredFrames: maybeNumber(raw.offeredFrames),
@@ -251,6 +318,7 @@ function readCaptureCounts(raw: unknown): CaptureCounts | null {
     sourceSubmitCount: maybeNumber(raw.sourceSubmitCount),
     sourceSubmitSumMs: maybeNumber(raw.sourceSubmitSumMs),
     sourceSubmitMaxMs: maybeNumber(raw.sourceSubmitMaxMs),
+    idleRepeatSkips: maybeNumber(raw.idleRepeatSkips),
     cpuFallbacks: maybeNumber(raw.cpuFallbacks),
     poolDrops: maybeNumber(raw.poolDrops),
     attempts: maybeNumber(raw.attempts),

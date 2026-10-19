@@ -398,6 +398,7 @@ actor CaptureEngine {
         let sessions = await webRTCPublisher?.senderStatistics(sessionId: sessionId) ?? []
         let counts = await frameCapture.frameCounts()
         let pick = await frameCapture.pickTimings()
+        let snapshot = await frameCapture.snapshotTimings()
         let timings = await frameCapture.captureTimings()
         let poll = await frameCapture.pollTimings()
         let surface = await frameCapture.surfaceLossTimings()
@@ -409,6 +410,12 @@ actor CaptureEngine {
                 pickCount: pick.count,
                 pickSumMs: Double(pick.sumNs) / 1_000_000,
                 pickMaxMs: Double(pick.maxNs) / 1_000_000,
+                snapshotCount: snapshot.count,
+                snapshotSumMs: Double(snapshot.sumNs) / 1_000_000,
+                snapshotMaxMs: Double(snapshot.maxNs) / 1_000_000,
+                snapshotOver16Ms: snapshot.over16Ms,
+                snapshotFailures: snapshot.failures,
+                source: counts.source,
                 screenFrames: counts.screen,
                 idleFrames: counts.idle,
                 offeredFrames: flow?.offered,
@@ -425,6 +432,7 @@ actor CaptureEngine {
                 sourceSubmitCount: flow?.sourceSubmitCount,
                 sourceSubmitSumMs: flow.map { Double($0.sourceSubmitSumNs) / 1_000_000 },
                 sourceSubmitMaxMs: flow.map { Double($0.sourceSubmitMaxNs) / 1_000_000 },
+                idleRepeatSkips: flow?.idleRepeatSkips,
                 cpuFallbacks: timings.cpuFallbacks,
                 poolDrops: timings.poolDrops,
                 attempts: timings.attempts,
@@ -442,7 +450,8 @@ actor CaptureEngine {
             ),
             viewerResize: webRTCPublisher?.viewerResizeCounters(),
             sharedCanvas: webRTCPublisher?.sharedCanvasStatus(),
-            sharedEncoderPeers: webRTCPublisher?.sharedEncoderPeerStats()
+            sharedEncoderPeers: webRTCPublisher?.sharedEncoderPeerStats(),
+            sharedEncoderFlow: webRTCPublisher?.sharedEncoderFlowStats()
         ))
         return String(decoding: data, as: UTF8.self)
     }
@@ -558,6 +567,38 @@ actor CaptureEngine {
         avccEncoders.removeAll()
         await frameCapture.stop()
         if let recordingError { throw recordingError }
+    }
+
+    private var benchmarkCaptureSuspended = false
+    private var benchmarkRecordingMode = "normal"
+
+    /// Test artifact only: preserve the worker's lease while isolating recorder work.
+    func benchmarkRecording(_ mode: String) async throws -> String {
+        guard screenID == nil, let recording else {
+            throw recordingError(40, "Benchmark control requires the root active recorder")
+        }
+        guard ["inspect", "normal", "encoder-paused", "recording-paused"].contains(mode) else {
+            throw recordingError(41, "Unknown recording benchmark mode")
+        }
+        let stats: RecordingBenchmarkStats
+        if mode == "inspect" {
+            stats = await recording.benchmarkState()
+        } else {
+            if mode != "normal" { _ = await recording.benchmarkState(paused: true) }
+            benchmarkCaptureSuspended = mode == "recording-paused"
+            await frameCapture.setBenchmarkSuspended(benchmarkCaptureSuspended)
+            stats = await recording.benchmarkState(paused: mode != "normal")
+            benchmarkRecordingMode = mode
+        }
+        let snapshot = await frameCapture.frameCounts()
+        let object: [String: Any] = [
+            "testOnly": true, "mode": benchmarkRecordingMode,
+            "captureSuspended": benchmarkCaptureSuspended,
+            "rootScreenFrames": snapshot.screen, "rootIdleFrames": snapshot.idle,
+            "recorder": try JSONSerialization.jsonObject(with: JSONEncoder().encode(stats)),
+            "scope": "Recording lease stays active; encoder-paused suppresses recorder submissions; recording-paused also suppresses root capture copies. Fixed panel feeds are unchanged."
+        ]
+        return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
     }
 
     func startRecording(outputDirectory: String) async throws {

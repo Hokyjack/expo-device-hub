@@ -1,0 +1,43 @@
+name: Pinned main and PR397 benchmark packages
+
+on:
+  workflow_dispatch: {}
+
+defaults:
+  tools:
+    node: 24
+    bun: 1.3.14
+
+jobs:
+  artifacts:
+    name: Build exact main, PR397 and test-only diagnostics
+    runs_on: macos-medium
+    image: latest
+    steps:
+      - uses: eas/checkout
+      - name: Build pinned comparison packages on one compiler image
+        run: bash scripts/bench/build-duo-comparison.sh
+      - name: Upload exact main
+        uses: eas/upload_artifact
+        with:
+          type: other
+          name: duo-main-package
+          path: release-benchmark/main-serve-sim.tgz
+      - name: Upload exact PR397
+        uses: eas/upload_artifact
+        with:
+          type: other
+          name: duo-pr397-package
+          path: release-benchmark/pr397-serve-sim.tgz
+      - name: Upload test-only diagnostics
+        uses: eas/upload_artifact
+        with:
+          type: other
+          name: duo-diagnostic-package
+          path: release-benchmark/diagnostic-serve-sim.tgz
+      - name: Upload hashes and build provenance
+        uses: eas/upload_artifact
+        with:
+          type: other
+          name: duo-benchmark-provenance
+          path: release-benchmark/*-provenance.json

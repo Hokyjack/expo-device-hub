@@ -53,8 +53,12 @@ buffer, preserving the right and bottom pixels. A failed normal transfer can
 fall back to a CPU copy, and capture reports that count; the expected
 recording-plus-WebRTC path uses the accelerated transfer. Neither a
 `CVPixelBuffer` wrapper nor a GPU transfer guarantees that the simulator is
-never delayed by a surface fence. Direct copy and viewer-scale latencies still
-need separate measurements.
+never delayed by a surface fence. Capture stats expose `snapshotCount`, `snapshotSumMs`, `snapshotMaxMs`,
+`snapshotOver16Ms` and `snapshotFailures` separately from surface selection and
+viewer resizing. These measure elapsed snapshot time, including surface fences,
+conversion and allocation, not physical GPU compute utilization. Unchanged-seed
+polls do not count as copies. [observed: `Sources/SimNative/FrameCapture.swift`,
+`captureFrame(force:allowLiveRevalidation:)`, `snapshotTimings()`]
 
 ## Capture recovery
 

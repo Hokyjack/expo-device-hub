@@ -817,4 +817,35 @@ final class NativeVideoRecorderTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("recording.mp4")), original)
     }
 
+    func testBenchmarkPauseStopsSubmissionsAndResumesRecording() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("serve-sim-benchmark-pause-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let mailbox = NativeFrameMailbox()
+        mailbox.setActive(true)
+        var pixels: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 120, 240,
+            kCVPixelFormatType_32BGRA, nil, &pixels), kCVReturnSuccess)
+        mailbox.publish(try XCTUnwrap(pixels), timestamp: .zero, wallClock: Date())
+        let recorder = try NativeVideoRecorder(mailbox: mailbox,
+            canvas: Dimensions(width: 120, height: 240), outputDirectory: directory.path)
+        recorder.start()
+        try await Task.sleep(for: .milliseconds(250))
+        _ = await recorder.benchmarkState(paused: true)
+        try await Task.sleep(for: .milliseconds(150))
+        let first = await recorder.benchmarkState()
+        try await Task.sleep(for: .milliseconds(200))
+        let second = await recorder.benchmarkState()
+        XCTAssertEqual(second.encodedFrames, first.encodedFrames)
+        XCTAssertGreaterThan(second.pausedTicks, first.pausedTicks)
+        XCTAssertEqual(second.pending, 0)
+        _ = await recorder.benchmarkState(paused: false)
+        try await Task.sleep(for: .milliseconds(250))
+        let resumed = await recorder.benchmarkState()
+        XCTAssertGreaterThan(resumed.encodedFrames, second.encodedFrames)
+        let result = try await recorder.finish()
+        XCTAssertEqual(result.encodeFailures, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.manifestPath))
+    }
+
 }

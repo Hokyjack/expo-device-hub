@@ -48,6 +48,19 @@ private final class RecordingFinishLatch: @unchecked Sendable {
     }
 }
 
+// Experimental artifact-only controls. This layer is not intended for production merge.
+struct RecordingBenchmarkStats: Codable, Sendable {
+    let paused: Bool
+    let pausedTicks: UInt64
+    let encodedFrames: UInt64
+    let writtenFrames: UInt64
+    let pending: Int
+    let encodeCompletions: UInt64
+    let encodeSumMs: Double
+    let encodeMaxMs: Double
+    let encodeFailures: UInt64
+}
+
 final class NativeVideoRecorder: @unchecked Sendable {
     private static let maxPendingFrames = 16
     private let queue = DispatchQueue(label: "serve-sim-native-recording", qos: .userInteractive)
@@ -95,6 +108,8 @@ final class NativeVideoRecorder: @unchecked Sendable {
     private var encodeTimeSumNs: UInt64 = 0
     private var encodeTimeMaxNs: UInt64 = 0
     private var encodeCompletions: UInt64 = 0
+    private var benchmarkPaused = false
+    private var benchmarkPausedTicks: UInt64 = 0
 
     init(mailbox: NativeFrameMailbox, canvas: Dimensions, outputDirectory: String,
          bitrate: Int = 30_000_000,
@@ -210,10 +225,34 @@ final class NativeVideoRecorder: @unchecked Sendable {
         }
     }
 
+    func benchmarkState(paused: Bool? = nil) async -> RecordingBenchmarkStats {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                if let paused, paused != self.benchmarkPaused {
+                    self.benchmarkPaused = paused
+                    self.forceIDR = true
+                    self.awaitingKeyframe = true
+                }
+                continuation.resume(returning: RecordingBenchmarkStats(
+                    paused: self.benchmarkPaused, pausedTicks: self.benchmarkPausedTicks,
+                    encodedFrames: self.encodedFrames, writtenFrames: self.writtenFrames,
+                    pending: self.pending.count, encodeCompletions: self.encodeCompletions,
+                    encodeSumMs: Double(self.encodeTimeSumNs) / 1_000_000,
+                    encodeMaxMs: Double(self.encodeTimeMaxNs) / 1_000_000,
+                    encodeFailures: self.encodeFailures))
+            }
+        }
+    }
+
     private func tick() {
         guard !closing, failure == nil, let session else { return }
         let now = nowNanoseconds()
         let currentIndex = Int64((now - startNanoseconds) / 16_666_667)
+        if benchmarkPaused {
+            benchmarkPausedTicks &+= 1
+            lastTick = currentIndex
+            return
+        }
         guard currentIndex > lastTick else { return }
         if currentIndex > lastTick + 60 {
             awaitingKeyframe = true

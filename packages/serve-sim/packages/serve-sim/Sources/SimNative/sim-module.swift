@@ -246,6 +246,10 @@ private func u32(_ v: Int) -> UInt32 {
         try await engine.resumeAfterReboot()
     }
 
+    @NodeMethod func benchmarkRecording(_ mode: String) async throws -> String {
+        try await engine.benchmarkRecording(mode)
+    }
+
     @NodeMethod func startRecording(_ outputDirectory: String) async throws {
         try await engine.startRecording(outputDirectory: outputDirectory)
     }
