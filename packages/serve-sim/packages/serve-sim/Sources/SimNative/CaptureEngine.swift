@@ -15,6 +15,7 @@ struct Frame: Identifiable {
     /// The viewer canvas the capture actor saw when it produced this frame.
     var canvas: Dimensions? = nil
     var captureGeneration: UInt64 = 0
+    var isActivePanel: Bool? = nil
 }
 
 protocol FrameEncoder {
@@ -167,7 +168,7 @@ actor CaptureEngine {
                     pixelBuffer, timestamp: timestamp, wallClock: Date(),
                     deviceState: screen.recordingDeviceState
                 )
-                frameContinuation.yield(Frame(pixelBuffer: pixelBuffer, timestamp: timestamp, canvas: canvas, captureGeneration: generation))
+                frameContinuation.yield(Frame(pixelBuffer: pixelBuffer, timestamp: timestamp, canvas: canvas, captureGeneration: generation, isActivePanel: screen.isActivePanel))
             }
             isFoldable = await frameCapture.isFoldable
         } catch {
@@ -482,7 +483,7 @@ actor CaptureEngine {
                 mailbox.publish(pixels, timestamp: timestamp, wallClock: Date(),
                                 deviceState: screen.recordingDeviceState)
                 readinessMailbox.publish(pixels, timestamp: timestamp, wallClock: Date())
-                continuation?.yield(Frame(pixelBuffer: pixels, timestamp: timestamp, canvas: canvas, captureGeneration: generation))
+                continuation?.yield(Frame(pixelBuffer: pixels, timestamp: timestamp, canvas: canvas, captureGeneration: generation, isActivePanel: screen.isActivePanel))
             }
             let deadline = ContinuousClock.now + .seconds(30)
             while readinessMailbox.latest() == nil {
@@ -653,7 +654,8 @@ actor CaptureEngine {
             maxFps: options.h264Fps,
             targetBitrate: options.h264Bitrate,
             maxDimension: options.maxDimension,
-            encodeCanvas: webRTCEncodeCanvas
+            encodeCanvas: webRTCEncodeCanvas,
+            fixedPanel: screenID != nil
         )
         let consumerId = UUID()
         consumers[consumerId] = WebRTCConsumer(publisher: publisher)
@@ -686,7 +688,7 @@ final class WebRTCConsumer: CaptureConsuming, @unchecked Sendable {
     }
 
     func handleFrame(_ frame: Frame) {
-        publisher.sendFrame(frame.pixelBuffer, timestamp: frame.timestamp)
+        publisher.sendFrame(frame.pixelBuffer, timestamp: frame.timestamp, panelActive: frame.isActivePanel)
     }
 }
 

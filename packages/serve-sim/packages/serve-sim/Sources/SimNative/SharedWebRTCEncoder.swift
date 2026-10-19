@@ -27,8 +27,10 @@ final class SharedWebRTCEncoderFactory: NSObject, LKRTCVideoEncoderFactory {
     private let shared: SharedWebRTCEncoder
     private let h264Allowed: () -> Bool
 
-    init(bitrate: Int, fps: Int, h264Allowed: @escaping () -> Bool, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
-        shared = SharedWebRTCEncoder(bitrate: bitrate, fps: fps, encodeFrame: encodeFrame)
+    init(bitrate: Int, fps: Int, h264Allowed: @escaping () -> Bool,
+         lowLatencyRateControl: Bool = true, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
+        shared = SharedWebRTCEncoder(bitrate: bitrate, fps: fps,
+                                     lowLatencyRateControl: lowLatencyRateControl, encodeFrame: encodeFrame)
         self.h264Allowed = h264Allowed
     }
 
@@ -155,10 +157,11 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         peers[peer] = value
     }
 
-    init(bitrate: Int, fps: Int, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
+    init(bitrate: Int, fps: Int, lowLatencyRateControl: Bool = true, encodeFrame: SharedWebRTCEncodeFrame? = nil) {
         self.fps = fps
         encoder = H264Encoder(fps: fps, bitrate: bitrate,
-                              constrainedBaseline: true, dynamicBitrate: true)
+                              constrainedBaseline: true, dynamicBitrate: true,
+                              lowLatencyRateControl: lowLatencyRateControl)
         let encoder = self.encoder
         self.encodeFrame = encodeFrame ?? { buffer, forceIDR, bitrate, fps in
             await encoder.update(fps: fps, bitrate: bitrate)
