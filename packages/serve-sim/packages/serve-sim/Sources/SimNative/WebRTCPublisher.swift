@@ -694,8 +694,9 @@ final class WebRTCPublisher: @unchecked Sendable {
     }
 
     /// Capture delivery. The resizer hands the frame back through `frameReady`.
-    func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime) {
+    func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime, panelActive: Bool? = nil) {
         frameLock.lock()
+        panelCadence?.setActive(panelActive)
         offeredFrameCount &+= 1
         let accepts = acceptsFrames
         let generation = frameAcceptanceGeneration
@@ -761,7 +762,6 @@ final class WebRTCPublisher: @unchecked Sendable {
         // A frame with the same pixels as the retained one does not count as fresh for the pacer,
         // but it still lets the pacer's watchdog restart a lost chain.
         if unchanged { unchangedFrameCount &+= 1 }
-        else { panelCadence?.frameChanged(atNanoseconds: nowNs) }
         let generation = framePumpGeneration
         let decision = unchanged
             ? framePacer.unchangedFrameArrived(atNanoseconds: nowNs)

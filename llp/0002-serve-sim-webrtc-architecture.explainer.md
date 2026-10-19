@@ -134,14 +134,21 @@ The recording uses a separate hardware H.264 session at native resolution. See
 [Video pipeline and recording](0001-serve-sim-video-pipeline.explainer.md) for why this encode is
 independent of viewer settings.
 
-After 500 ms without changed pixels, fixed Duo panel feeds suppress identical
-pixel submissions to a 5 fps keepalive;
-changed pixels and explicit publisher keyframe requests bypass that idle limit
-on the next pump tick. Browser PLI requests reach the encoder through libwebrtc
-only when another source frame is submitted, so static-panel PLI recovery may
-wait up to the 200 ms keepalive interval. This avoids competing with the active panel for the VM's encoder while
-the outer panel is static. The pump's `pumpRepeats` counts planned repeats;
-`idleRepeatSkips` counts those suppressed before `forwardedFrames` increments.
+Only a known inactive integrated panel on a two-display Duo uses the 5 fps
+keepalive. The main capture's CoreDevice election is shared with panel captures;
+no additional CoreDevice polling is added. Observations older than one second,
+unavailable/ambiguous elections, ordinary devices and active panels retain normal
+publisher cadence even when their pixels are identical. Activity changes are
+propagated even when the surface seed did not change. This avoids spending the
+VM encoder budget on the inactive panel without slowing a motionless active UI.
+Explicit publisher keyframe requests bypass the inactive limit. Browser PLI reaches
+the encoder through libwebrtc on the next source submission, so an inactive panel's
+PLI recovery can wait up to the 200 ms keepalive interval. The pump's `pumpRepeats`
+counts planned repeats; `idleRepeatSkips` counts inactive-panel suppressions before
+`forwardedFrames` increments. [observed: `Sources/SimNative/CoreDeviceDisplayInfo.swift`,
+`ActiveDisplayObservation`; `Sources/SimNative/FrameCapture.swift`, `updateDisplayInfo(_:)`;
+`Sources/SimNative/WebRTCPublisher.swift`, `sendFrame(_:timestamp:panelActive:)`;
+`Sources/StreamingPolicy/PanelFrameCadence.swift`]
 Fixed-panel shared H.264 senders use `maintainFramerateAndResolution`: the shared
 resolution policy still follows bitrate, and the bounded shared encoder replaces
 pending work when it cannot keep up. Per-peer CPU adaptation otherwise adds a
