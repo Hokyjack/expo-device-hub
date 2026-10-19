@@ -15,6 +15,7 @@ import {
   pasteboardDylib,
   pasteboardFixture,
   pasteboardTool,
+  waitForFixtureSelection,
   withSkipPbpaste,
 } from "./pasteboard-sim";
 
@@ -38,6 +39,8 @@ afterAll(() => stateDir.restore());
     try {
       ensureFixtureInstalled(udid!);
       app = await launchWithoutReader(udid!, FIXTURE_BUNDLE);
+      // On iOS 27 the fixture focuses and selects its text seconds after launch.
+      await waitForFixtureSelection(udid!);
       expect(peekDeviceSession(udid!)).toBeUndefined();
       expect((await run("clipboard.copy")).text).toBe(COPY_FIXTURE_TEXT);
     } finally {

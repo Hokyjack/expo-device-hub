@@ -9,7 +9,7 @@ import { isCapabilityEnabled } from "./launch-manager";
 import { readLaunchState } from "./launch-state";
 import { simctl } from "./simctl";
 import { withStateLock } from "./state-lock";
-import { buildSimpbArtifact, locateSimpbArtifact, MAX_PASTEBOARD_TEXT_BYTES, PasteboardTooLargeError, readPasteboardViaSimctl, type PasteboardReadResult } from "./sim-pasteboard";
+import { buildSimpbArtifact, locateSimpbArtifact, MAX_PASTEBOARD_TEXT_BYTES, noteAppPasteboardRead, PasteboardTooLargeError, readPasteboardViaSimctl, type PasteboardReadResult } from "./sim-pasteboard";
 
 export const CLIPBOARD_CAPABILITY = "clipboard";
 
@@ -93,6 +93,7 @@ async function readViaInjectedReader(udid: string): Promise<PasteboardReadResult
   // A denied read and an empty pasteboard both produce an empty string.
   await simctl(["privacy", udid, "grant", "pasteboard", bundleId]);
   const text = await requestInjectedPasteboard(container);
+  if (text !== null) noteAppPasteboardRead(udid);
   if (text === null) {
     // @ref LLP 0010#reads-never-restart-apps — why the error asks for a restart instead of restarting
     throw new PasteboardUnavailableError(frontmost?.bundleId === SPRINGBOARD_BUNDLE

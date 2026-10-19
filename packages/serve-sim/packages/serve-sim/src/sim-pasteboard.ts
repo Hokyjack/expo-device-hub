@@ -63,6 +63,25 @@ export function withSimPasteboardLock<T>(udid: string, run: () => Promise<T>, ti
   );
 }
 
+// @ref LLP 0010#paste-after-an-app-read — iOS 27 drops a Command+V sent soon after an app read
+const PASTE_AFTER_APP_READ_MS = 4_000;
+const lastAppPasteboardRead = new Map<string, number>();
+
+/** Record that an app on `udid` read pasteboard text, through Paste or the injected reader. */
+export function noteAppPasteboardRead(udid: string, at = Date.now()): void {
+  lastAppPasteboardRead.set(udid, at);
+}
+
+export function pasteAfterAppReadDelayMs(udid: string, now = Date.now()): number {
+  const last = lastAppPasteboardRead.get(udid);
+  return last === undefined ? 0 : Math.max(0, last + PASTE_AFTER_APP_READ_MS - now);
+}
+
+export async function waitToPasteAfterAppRead(udid: string): Promise<void> {
+  const delay = pasteAfterAppReadDelayMs(udid);
+  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+}
+
 export function writeSimPasteboard(udid: string, text: string): Promise<void> {
   return withSimPasteboardLock(udid, () => writeSimPasteboardUnlocked(udid, text));
 }

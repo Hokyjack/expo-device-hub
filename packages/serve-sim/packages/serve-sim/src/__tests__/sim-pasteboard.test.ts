@@ -2,7 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { buildSimpbArtifact, writeSimPasteboard } from "../sim-pasteboard";
+import { buildSimpbArtifact, noteAppPasteboardRead, pasteAfterAppReadDelayMs, writeSimPasteboard } from "../sim-pasteboard";
 import { pasteTextIntoSim } from "../sim-pasteboard-paste";
 import { installShims, withShimsAsync } from "./helpers";
 
@@ -112,5 +112,17 @@ describe("writeSimPasteboard", () => {
       else process.env.SERVE_SIM_SIMPB_DIR = oldToolDir;
       shims.restore();
     }
+  });
+});
+
+describe("pasteAfterAppReadDelayMs", () => {
+  test("waits 4 s after an app read on the same device only", () => {
+    expect(pasteAfterAppReadDelayMs("never-read", 1_000)).toBe(0);
+    noteAppPasteboardRead("read-device", 10_000);
+    expect(pasteAfterAppReadDelayMs("read-device", 10_000)).toBe(4_000);
+    expect(pasteAfterAppReadDelayMs("read-device", 11_000)).toBe(3_000);
+    expect(pasteAfterAppReadDelayMs("read-device", 14_000)).toBe(0);
+    expect(pasteAfterAppReadDelayMs("read-device", 20_000)).toBe(0);
+    expect(pasteAfterAppReadDelayMs("other-device", 10_000)).toBe(0);
   });
 });

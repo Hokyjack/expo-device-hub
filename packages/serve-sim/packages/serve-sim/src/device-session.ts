@@ -33,7 +33,7 @@ import {
   type NativeUnsubscribe,
 } from "./native";
 import { isSoftwareKeyboardVisible } from "./ax";
-import { INPUT_PASTEBOARD_LOCK_TIMEOUT_MS, MAX_PASTEBOARD_TEXT_BYTES, PasteboardBusyError, type PasteboardReadResult, withSimPasteboardLock } from "./sim-pasteboard";
+import { INPUT_PASTEBOARD_LOCK_TIMEOUT_MS, MAX_PASTEBOARD_TEXT_BYTES, PasteboardBusyError, noteAppPasteboardRead, type PasteboardReadResult, waitToPasteAfterAppRead, withSimPasteboardLock } from "./sim-pasteboard";
 import { isLiftedModifier, KEY_C, KEY_V, simCommandShortcutHidEvents } from "./sim-command-shortcut";
 import { pasteTextIntoSim } from "./sim-pasteboard-paste";
 import { copyFromSim, withCleanupWarning } from "./sim-pasteboard-copy";
@@ -1549,11 +1549,14 @@ export class DeviceSession {
           const sendShortcut = async () => {
             assertViewer();
             cleanupWarning = await this.sendPasteShortcut(ws);
+            noteAppPasteboardRead(this.udid);
           };
           try {
             if (this.hid.inputUnavailable) throw new Error("Simulator input is unavailable");
             const operation = this.queueInputOperation(ws, async () => {
               if (this.hid.inputUnavailable) throw new Error("Simulator input is unavailable");
+              // @ref LLP 0010#paste-after-an-app-read — wait before the lock, so other writers are not held.
+              await waitToPasteAfterAppRead(this.udid);
               if (typeof text === "string") await pasteTextIntoSim(this.udid, text, sendShortcut, assertViewer);
               else await withSimPasteboardLock(this.udid, sendShortcut, INPUT_PASTEBOARD_LOCK_TIMEOUT_MS);
             }, { clipboard: true });
@@ -1811,7 +1814,10 @@ export class DeviceSession {
       const sendShortcut = async () => {
         assertInput();
         cleanupWarning = await this.sendCommandShortcut(KEY_V, null);
+        noteAppPasteboardRead(this.udid);
       };
+      await waitToPasteAfterAppRead(this.udid);
+      assertInput();
       if (text !== undefined) await pasteTextIntoSim(this.udid, text, sendShortcut, assertInput);
       else await withSimPasteboardLock(this.udid, sendShortcut, INPUT_PASTEBOARD_LOCK_TIMEOUT_MS);
       completed = true;
