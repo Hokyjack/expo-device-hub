@@ -10,6 +10,7 @@ let target: number | undefined;
 let reads = 0;
 let observedAfter = 3;
 let tableMode = false;
+let physicalOrientation = "portrait";
 let authorization: string | null;
 
 class Socket extends EventEmitter {
@@ -17,6 +18,10 @@ class Socket extends EventEmitter {
   send(data: Buffer) {
     const request = JSON.parse(data.subarray(1).toString()) as { requestId: number; command: HingeControlCommand };
     commands.push(request.command);
+    if (request.command.control === "pose") {
+      expect(request.command.value).toBe("tent");
+      target = 80; physicalOrientation = "facedown"; tableMode = true;
+    }
     if (request.command.control === "angle") target = request.command.value;
     if (request.command.control === "table") {
       expect(angle).toBe(target!);
@@ -30,14 +35,14 @@ mock.module("ws", () => ({ default: Socket }));
 const { restoreHingeState, waitForHingeConfig } = await import("../duo-hinge-helpers");
 
 beforeEach(() => {
-  commands.length = 0; angle = 0; target = undefined; reads = 0; observedAfter = 3; tableMode = false; authorization = null;
+  commands.length = 0; angle = 0; target = undefined; reads = 0; observedAfter = 3; tableMode = false; authorization = null; physicalOrientation = "portrait";
   globalThis.fetch = (async (_input, init) => {
     reads++;
     authorization = new Headers(init?.headers).get("Authorization");
     if (target !== undefined && reads >= observedAfter) angle = target;
     return Response.json({ width: 2007, height: 2853, hingeAngle: target ?? angle,
-      physicalOrientation: "portrait", tableMode,
-      observedDeviceState: { hingeAngle: angle, physicalOrientation: "portrait", tableMode },
+      physicalOrientation, tableMode,
+      observedDeviceState: { hingeAngle: angle, physicalOrientation, tableMode },
     });
   }) as typeof fetch;
 });
@@ -61,4 +66,13 @@ test("a sub-degree restore does not require a new native stream sample", async (
   observedAfter = Infinity;
   const config = await waitForHingeConfig(state, { hingeAngle: 80.25 }, 50);
   expect(config.hingeAngle).toBe(80);
+});
+
+test("restoration restores Tent orientation and Table Mode after an angle-only handoff", async () => {
+  angle = 180;
+  await restoreHingeState(state, { hingeAngle: 80, hingePose: "tent", tableMode: true });
+  expect(commands).toEqual([{ control: "pose", value: "tent" }, { control: "table", value: true }]);
+  expect(angle).toBe(80);
+  expect(physicalOrientation).toBe("facedown");
+  expect(tableMode).toBe(true);
 });

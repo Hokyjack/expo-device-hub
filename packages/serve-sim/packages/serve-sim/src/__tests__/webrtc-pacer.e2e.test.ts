@@ -6,6 +6,8 @@ import { join } from "path";
 import { RTCPeerConnection, RTCRtpCodecParameters } from "werift";
 
 import { sendHingeAngleToWs } from "../hinge-command";
+import { inProcessServeSimState } from "../state";
+import { restoreHingeState, selectPose, waitForHingeConfig } from "./duo-hinge-helpers";
 import { freePortAsync } from "./helpers";
 
 // Regression test for the frame pump's cadence. A production trace showed the
@@ -157,14 +159,18 @@ describeIfSim("WebRTC frame pump cadence", () => {
   test.skipIf(!isDuo)("both connected Duo panels follow active-display handoffs", async () => {
     const panels = ["/panel/1", "/panel/3"];
     const peers: RTCPeerConnection[] = [];
-    const ws = `${baseUrl.replace("http:", "ws:")}/helper/${udid}/ws`;
+    const state = inProcessServeSimState(udid!, Number(new URL(baseUrl).port));
+    const ws = state.wsUrl;
     const config = async () => {
       const response = await fetch(`${baseUrl}/helper/${udid}/config`);
       if (!response.ok) throw new Error(`config unavailable: ${response.status}`);
       return await response.json() as { screenId?: number; hingeAngle?: number };
     };
-    const original = await config();
+    const original = await waitForHingeConfig(state, { supportsHingeAngle: true });
+    expect(original.physicalOrientation === "portrait" || Boolean(original.hingePose),
+      "handoff needs portrait or a known preset so cleanup can restore orientation").toBe(true);
     try {
+      if (original.hingePose) await selectPose(state, "book");
       for (const panel of panels) peers.push(await connect(panel));
       // CoreDevice elects inner panel 3 when open, outer panel 1 when closed.
       for (const [angle, active] of [[180, 3], [0, 1], [180, 3]] as const) {
@@ -198,7 +204,7 @@ describeIfSim("WebRTC frame pump cadence", () => {
       }
     } finally {
       try {
-        if (original.hingeAngle !== undefined) await sendHingeAngleToWs(ws, original.hingeAngle);
+        await restoreHingeState(state, original);
       } finally {
         for (const peer of peers) peer.close();
       }
