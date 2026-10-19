@@ -148,6 +148,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "webrtc-shared-h264", qos: .userInteractive)
     private let queueKey = DispatchSpecificKey<Bool>()
     private let encoder: H264Encoder
+    private let benchmarkDefaultRateControl: Bool
     private let encodeFrame: SharedWebRTCEncodeFrame
     private var policy: SharedH264Policy
     private var callbacks: [Int: (EncoderCallback, LKRTCH264PacketizationMode)] = [:]
@@ -183,6 +184,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
         self.fps = fps
         encoder = H264Encoder(fps: fps, bitrate: bitrate,
                               constrainedBaseline: true, dynamicBitrate: true)
+        benchmarkDefaultRateControl = encoder.benchmarkDefaultRateControl
         let encoder = self.encoder
         self.encodeFrame = encodeFrame ?? { buffer, forceIDR, bitrate, fps in
             await encoder.update(fps: fps, bitrate: bitrate)
@@ -277,7 +279,7 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
     func flowStats() -> SharedEncoderFlowStats { onQueue { flow } }
 
     func rateControlMode() -> String {
-        onQueue { fallbacks == 0 ? "low-latency" : "default" }
+        onQueue { benchmarkDefaultRateControl || fallbacks > 0 ? "default" : "low-latency" }
     }
 
     func liveIdentity() -> H264RuntimeIdentity? { onQueue { liveEncoderIdentity } }

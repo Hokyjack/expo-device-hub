@@ -979,10 +979,27 @@ export class DeviceSession {
         16 * 1024,
         new WebRtcSignalingError("Stream settings body is too large", 413, "body_too_large"),
       );
-      const patch = parseStreamEncoderSettingsPatch(
-        parseJsonBody(body, "invalid_stream_settings"),
-        this.transport,
-      );
+      const value = parseJsonBody(body, "invalid_stream_settings");
+      // Private benchmark artifact only. Applies to new native encoders in this
+      // process; close and reopen both panel peers before measuring the mode.
+      if (value !== null && typeof value === "object" && !Array.isArray(value) &&
+          Object.hasOwn(value, "benchH264RateControl")) {
+        const mode = (value as Record<string, unknown>).benchH264RateControl;
+        if (Object.keys(value).length !== 1 || (mode !== "low-latency" && mode !== "default")) {
+          throw new WebRtcSignalingError("Invalid benchmark rate control", 400, "invalid_benchmark_rate_control");
+        }
+        // Bun's process.env writes do not update the environment getenv reads.
+        if (process.versions.bun) {
+          throw new WebRtcSignalingError("Benchmark mode control requires Node", 409, "benchmark_requires_node");
+        }
+        await this.streamSettingsUpdate;
+        process.env.SERVE_SIM_BENCH_H264_RATE_CONTROL = mode;
+        if (!res.writableEnded && !res.destroyed) {
+          this.sendJson(res, 200, { benchH264RateControl: mode, requiresReopen: true, processId: process.pid });
+        }
+        return;
+      }
+      const patch = parseStreamEncoderSettingsPatch(value, this.transport);
       if (!patch) {
         throw new WebRtcSignalingError(
           "Invalid stream settings",

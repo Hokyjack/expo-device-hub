@@ -1,0 +1,35 @@
+name: Duo rate-control benchmark artifact
+
+# Manual-only experiment. This builds a pinned package; it deploys no worker.
+on:
+  workflow_dispatch: {}
+
+defaults:
+  tools:
+    node: 24
+    bun: 1.3.14
+
+jobs:
+  artifact:
+    name: Build private Duo benchmark package
+    runs_on: macos-medium
+    image: latest
+    steps:
+      - uses: eas/checkout
+      - uses: eas/install_node_modules
+      - name: Build serve-sim
+        run: bun run build.ts
+        working_directory: packages/serve-sim/packages/serve-sim
+      - name: Create npm package
+        working_directory: packages/serve-sim/packages/serve-sim
+        run: |
+          mkdir -p release
+          npm pack --pack-destination release --json > /tmp/npm-pack.json
+          TARBALL=$(node -p 'JSON.parse(require("fs").readFileSync(0, "utf8"))[0].filename' < /tmp/npm-pack.json)
+          mv "release/$TARBALL" release/serve-sim.tgz
+      - name: Upload benchmark package
+        uses: eas/upload_artifact
+        with:
+          type: other
+          name: serve-sim-npm-package
+          path: packages/serve-sim/packages/serve-sim/release/serve-sim.tgz

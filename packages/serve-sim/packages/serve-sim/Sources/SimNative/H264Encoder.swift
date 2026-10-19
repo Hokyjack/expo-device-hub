@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import CoreVideo
 import CoreMedia
 import VideoToolbox
@@ -39,6 +40,9 @@ actor H264Encoder {
     private var emittedDescription = false
     private var frameCount: Int64 = 0
     private var lowLatencyEnabled = true
+    /// Private benchmark selection, captured once so later environment changes
+    /// cannot alter or relabel a live encoder. Unset preserves normal behavior.
+    nonisolated let benchmarkDefaultRateControl: Bool
     /// Times the encoder fell back from low-latency to default rate control. Nothing turns
     /// low-latency rate control back on, so it is 0 or 1 for one encoder.
     private(set) var lowLatencyFallbacks: UInt64 = 0
@@ -66,6 +70,10 @@ actor H264Encoder {
         self.bitrate = max(1, bitrate)
         self.constrainedBaseline = constrainedBaseline
         self.dynamicBitrate = dynamicBitrate
+        let benchmarkDefaultRateControl = getenv("SERVE_SIM_BENCH_H264_RATE_CONTROL")
+            .map { String(cString: $0) == "default" } ?? false
+        self.benchmarkDefaultRateControl = benchmarkDefaultRateControl
+        self.lowLatencyEnabled = !benchmarkDefaultRateControl
     }
 
     deinit {

@@ -163,11 +163,24 @@ floor remains 5 fps. This does not change the publisher's configured output rate
 [observed: `Sources/SimNative/FrameCapture.swift`, `startSurfacePoller()`;
 `Sources/StreamingPolicy/WebRTCFrameRatePolicy.swift`]
 
-All shared H.264 paths request low-latency rate control and retain the existing
+Without the private benchmark selection below, shared H.264 paths request low-latency rate control and retain the existing
 fallback to default rate control if session creation or encoding fails.
 `sharedCanvas.rateControlMode` reports the request after any fallback, separately
 from the fallback count. [observed:
 `Sources/SimNative/H264Encoder.swift`, `rebuildSession()` and `encode(_:forceKeyframe:)`;
+`Sources/SimNative/SharedWebRTCEncoder.swift`, `rateControlMode()`]
+
+**Private benchmark artifact only:** a standalone `benchH264RateControl` PATCH
+selects `low-latency` or `default` for newly created encoders in that Node helper.
+Both panel peers must be closed and their captures released before switching;
+the benchmark then recreates both peers and verifies their live mode/identity.
+The selection is captured once per encoder, so changing it cannot relabel a
+running session. Explicit default mode does not increment the fallback count.
+Bun rejects this control because its environment writes are not visible to the
+native `getenv` call. This instrumentation is confined to the benchmark branch;
+it is not a production default or part of PR #397. [observed:
+`src/device-session.ts`, `handleStreamSettings()`;
+`Sources/SimNative/H264Encoder.swift`, initializer;
 `Sources/SimNative/SharedWebRTCEncoder.swift`, `rateControlMode()`]
 
 
