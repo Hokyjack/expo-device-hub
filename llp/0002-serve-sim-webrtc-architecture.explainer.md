@@ -136,8 +136,10 @@ independent of viewer settings.
 
 After 500 ms without changed pixels, fixed Duo panel feeds suppress identical
 pixel submissions to a 5 fps keepalive;
-changed pixels and a requested keyframe bypass that idle limit on the next pump
-tick. This avoids competing with the active panel for the VM's encoder while
+changed pixels and explicit publisher keyframe requests bypass that idle limit
+on the next pump tick. Browser PLI requests reach the encoder through libwebrtc
+only when another source frame is submitted, so static-panel PLI recovery may
+wait up to the 200 ms keepalive interval. This avoids competing with the active panel for the VM's encoder while
 the outer panel is static. The pump's `pumpRepeats` counts planned repeats;
 `idleRepeatSkips` counts those suppressed before `forwardedFrames` increments.
 Fixed-panel shared H.264 senders use `maintainFramerateAndResolution`: the shared
