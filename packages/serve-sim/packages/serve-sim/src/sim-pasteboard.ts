@@ -78,8 +78,10 @@ export function pasteAfterAppReadDelayMs(udid: string, now = Date.now()): number
 }
 
 export async function waitToPasteAfterAppRead(udid: string): Promise<void> {
-  const delay = pasteAfterAppReadDelayMs(udid);
-  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+  // A read can finish during the wait and move the deadline, so check again after each wait.
+  for (let delay = pasteAfterAppReadDelayMs(udid); delay > 0; delay = pasteAfterAppReadDelayMs(udid)) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
 }
 
 export function writeSimPasteboard(udid: string, text: string): Promise<void> {

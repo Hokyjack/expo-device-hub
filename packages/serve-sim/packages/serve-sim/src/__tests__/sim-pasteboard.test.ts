@@ -2,7 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { buildSimpbArtifact, noteAppPasteboardRead, pasteAfterAppReadDelayMs, writeSimPasteboard } from "../sim-pasteboard";
+import { buildSimpbArtifact, noteAppPasteboardRead, pasteAfterAppReadDelayMs, waitToPasteAfterAppRead, writeSimPasteboard } from "../sim-pasteboard";
 import { pasteTextIntoSim } from "../sim-pasteboard-paste";
 import { installShims, withShimsAsync } from "./helpers";
 
@@ -124,5 +124,14 @@ describe("pasteAfterAppReadDelayMs", () => {
     expect(pasteAfterAppReadDelayMs("read-device", 14_000)).toBe(0);
     expect(pasteAfterAppReadDelayMs("read-device", 20_000)).toBe(0);
     expect(pasteAfterAppReadDelayMs("other-device", 10_000)).toBe(0);
+  });
+
+  test("waits for a read that finishes during the wait", async () => {
+    noteAppPasteboardRead("moving-device", Date.now() - 3_950);
+    const started = Date.now();
+    const later = setTimeout(() => noteAppPasteboardRead("moving-device", Date.now() - 3_900), 20);
+    await waitToPasteAfterAppRead("moving-device");
+    clearTimeout(later);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(100);
   });
 });

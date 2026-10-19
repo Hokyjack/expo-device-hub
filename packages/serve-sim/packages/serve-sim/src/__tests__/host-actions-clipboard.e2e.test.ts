@@ -63,17 +63,22 @@ afterAll(() => stateDir.restore());
         const text = ' \n🦆 {"text":true}\n ';
         await run("clipboard.write", { text });
         expect((await run("clipboard.read")).text).toBe(text);
+        // Check the field after each Paste, so a failure names the Paste that was lost.
+        const expectField = async (expected: string) => {
+          const pastedText = JSON.stringify(expected).slice(1, -1);
+          const deadline = Date.now() + 5000;
+          let tree = "";
+          do {
+            tree = await axDescribeAsync(udid!);
+            if (tree.includes(pastedText)) break;
+            await Bun.sleep(100);
+          } while (Date.now() < deadline);
+          expect(tree).toContain(pastedText);
+        };
         await run("clipboard.paste");
+        await expectField(text);
         await run("clipboard.paste", { text: "direct paste" });
-        const pastedText = JSON.stringify(`${text}direct paste`).slice(1, -1);
-        const deadline = Date.now() + 5000;
-        let tree = "";
-        do {
-          tree = await axDescribeAsync(udid!);
-          if (tree.includes(pastedText)) break;
-          await Bun.sleep(100);
-        } while (Date.now() < deadline);
-        expect(tree).toContain(pastedText);
+        await expectField(`${text}direct paste`);
         await run("clipboard.write", { text: "" });
         expect((await run("clipboard.read")).text).toBe("");
       });
