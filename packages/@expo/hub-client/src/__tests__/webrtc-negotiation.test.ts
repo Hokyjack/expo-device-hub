@@ -163,22 +163,25 @@ describe("WebRTC offer negotiation", () => {
     expect(requests).toBe(1);
   });
 
-  test("does not retry a permanent serve-emu code without an error message", async () => {
-    let requests = 0;
-    const response = await postWebRtcOffer({
-      url: "https://example.test/webrtc/offer",
-      body: "{}",
-      requestTimeoutMs: 100,
-      busyRetryIntervalMs: 0,
-      busyRetryCount: 1,
-      fetchImpl: async () => {
-        requests++;
-        return Response.json({ code: "invalid_offer" }, { status: 409 });
-      },
-    });
-    expect(response.status).toBe(409);
-    expect(requests).toBe(1);
-  });
+  test.each(["invalid_offer", "device_mismatch"])(
+    "does not retry permanent serve-emu code %s",
+    async (code) => {
+      let requests = 0;
+      const response = await postWebRtcOffer({
+        url: "https://example.test/webrtc/offer",
+        body: "{}",
+        requestTimeoutMs: 100,
+        busyRetryIntervalMs: 0,
+        busyRetryCount: 1,
+        fetchImpl: async () => {
+          requests++;
+          return Response.json({ code }, { status: 409 });
+        },
+      });
+      expect(response.status).toBe(409);
+      expect(requests).toBe(1);
+    },
+  );
 
   test("the signaling deadline also bounds a stalled 409 body", async () => {
     await expect(
