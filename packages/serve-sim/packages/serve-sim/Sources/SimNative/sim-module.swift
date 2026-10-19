@@ -31,13 +31,18 @@ private func u32(_ v: Int) -> UInt32 {
         self.udid = udid
         let injector = HIDInjector()
         self.injector = injector
+        // @ref LLP 0004#touch-transport — all commands deliberately share the setup failure gate.
         setup = HIDInputSetup { try await injector.setup(deviceUDID: udid) }
     }
 
-    /// Zero means capture has no modern screen metadata; retain legacy routing.
-    @NodeMethod func setScreen(_ screenID: Int) async throws {
+    /// Zero omits capture metadata; ordinary iOS uses its sole profile panel.
+    /// Returns keyboard availability after setup; touch remains independent.
+    @NodeMethod func setScreen(_ screenID: Int) async throws -> Bool {
         let id = UInt32(exactly: screenID).flatMap { $0 > 0 ? $0 : nil }
-        try await setup.run { await injector.setScreen(screenID: id) }
+        return try await setup.run {
+            await injector.setScreen(screenID: id)
+            return await injector.supportsKeyboard()
+        }
     }
 
     @NodeMethod func touch(_ type: String, _ x: Double, _ y: Double,

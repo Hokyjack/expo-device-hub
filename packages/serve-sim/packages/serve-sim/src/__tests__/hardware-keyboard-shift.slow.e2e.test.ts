@@ -338,6 +338,9 @@ describeWithSim(`desktop Shift with the hardware keyboard off (sim ${udid ?? "<s
     try { simctl("terminate", udid!, APP); } catch {}
     simctl("launch", udid!, APP, "--input-test");
     await waitFor(() => countEvents(start, "input-ready"), 1);
+    // CoreDevice touch drops a gesture that starts within about 250 ms of a relaunch, even
+    // after the app reports ready. The legacy path delivered it.
+    await Bun.sleep(500);
 
     send(socket, 0x03, { type: "begin", x: 0.5, y: 0.5 });
     send(socket, 0x03, { type: "end", x: 0.5, y: 0.5 });
