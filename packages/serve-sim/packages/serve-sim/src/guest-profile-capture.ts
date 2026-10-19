@@ -22,6 +22,9 @@ const defaults: CaptureDeps = {
   wait: delay,
 };
 
+/** Expected refusals contain only fixed, safe-to-return diagnostics. */
+export class GuestProfileCaptureError extends Error {}
+
 /** One bounded collection across all control sockets in this preview process. */
 export class GuestProfileCapture {
   private active = false;
@@ -29,17 +32,17 @@ export class GuestProfileCapture {
 
   async capture(seconds: number): Promise<string> {
     if (!Number.isInteger(seconds) || seconds < 1 || seconds > 30) throw new Error("Profile duration must be 1-30 seconds");
-    if (this.active) throw new Error("A guest profile is already running");
+    if (this.active) throw new GuestProfileCaptureError("A guest profile is already running");
     this.active = true;
     let directory: string | undefined;
     try {
-      if (!(await this.deps.isVm())) throw new Error("Remote guest profiling requires a VM");
+      if (!(await this.deps.isVm())) throw new GuestProfileCaptureError("Remote guest profiling requires a VM");
       directory = await mkdtemp(join(tmpdir(), "serve-sim-guest-profile-"));
       const path = join(directory, "guest.ndjson");
       const recorder = await this.deps.start(path);
       try { await this.deps.wait(seconds * 1000); }
       finally { await recorder.finishAsync(); }
-      if ((await stat(path)).size > MAX_RESPONSE_BYTES) throw new Error("Guest profile exceeds the 16 MiB response limit; use a shorter duration");
+      if ((await stat(path)).size > MAX_RESPONSE_BYTES) throw new GuestProfileCaptureError("Guest profile exceeds the 16 MiB response limit; use a shorter duration");
       return await readFile(path, "utf8");
     } finally {
       try { if (directory) await rm(directory, { recursive: true, force: true }); }

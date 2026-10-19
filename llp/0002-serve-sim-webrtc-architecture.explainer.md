@@ -135,7 +135,7 @@ The recording uses a separate hardware H.264 session at native resolution. See
 independent of viewer settings.
 
 `/webrtc/stats` also exposes cumulative `sharedEncoderFlow` counters: submitted,
-coalesced pending frames, completed and failed encodes, plus wall-clock milliseconds
+coalesced pending frames, completed encodes and failed encode/conversion results, plus wall-clock milliseconds
 spent waiting in the latest-frame slot, dispatching the encode task, awaiting the
 encoder, dispatching completion, and delivering the result. These separate the
 shared encoder from libwebrtc's per-peer `totalEncodeTime`, which includes waiting

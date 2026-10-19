@@ -461,6 +461,8 @@ private final class SharedWebRTCEncoder: @unchecked Sendable {
             avcc: output.avcc, parameterSets: output.parameterSets,
             keyframe: output.kind == .keyframe
         ) else {
+            // A nil encoder result was counted at completion; conversion can also reject a result.
+            if output != nil { flow.failed &+= 1 }
             policy.requestIDR()
             if let queuedFrame {
                 self.queuedFrame = QueuedFrame(

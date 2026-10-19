@@ -1,8 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { truncate, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { GuestProfileCapture } from "../guest-profile-capture";
+import { GuestProfileCapture, guestProfileCapture } from "../guest-profile-capture";
 import { InvalidHostActionError, runHostActionAsync } from "../host-actions";
 
 test("remote profiling rejects paths, commands and unbounded durations before collecting", async () => {
@@ -77,4 +77,28 @@ test("a failed wait still finalizes the collector and removes private output", a
   await expect(capture.capture(1)).rejects.toThrow("interrupted");
   expect(finalized).toBe(true);
   expect(existsSync(dirname(file))).toBe(false);
+});
+
+
+test("the action channel preserves a safe operational profiling refusal", async () => {
+  const physicalHost = new GuestProfileCapture({
+    isVm: async () => false,
+    start: async () => { throw new Error("collector must not start"); },
+    wait: async () => {},
+  });
+  const capture = spyOn(guestProfileCapture, "capture").mockImplementation((seconds) => physicalHost.capture(seconds));
+  try {
+    await expect(runHostActionAsync({ action: "profile.capture", params: { seconds: 1 } }, "true"))
+      .resolves.toEqual({ stdout: "", stderr: "Remote guest profiling requires a VM", exitCode: 1 });
+  } finally { capture.mockRestore(); }
+});
+
+
+test("unexpected collector errors retain the action channel's private-error path", async () => {
+  const failure = new Error("private collector failure");
+  const capture = spyOn(guestProfileCapture, "capture").mockRejectedValue(failure);
+  try {
+    await expect(runHostActionAsync({ action: "profile.capture", params: { seconds: 1 } }, "true"))
+      .rejects.toBe(failure);
+  } finally { capture.mockRestore(); }
 });

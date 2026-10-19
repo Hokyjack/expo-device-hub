@@ -650,8 +650,13 @@ async function runProcedureAsync(action: ProcedureAction, raw: unknown, streamSe
     case "profile.capture": {
       const { seconds } = parseParams(action, raw);
       // @ref LLP 0003#guest-profiling — bounded VM diagnostics through the authenticated action channel.
-      const { guestProfileCapture } = await import("./guest-profile-capture");
-      return ok(await guestProfileCapture.capture(seconds));
+      const { guestProfileCapture, GuestProfileCaptureError } = await import("./guest-profile-capture");
+      try { return ok(await guestProfileCapture.capture(seconds)); }
+      catch (error) {
+        // Only fixed operational refusals cross the action channel; unexpected errors stay private.
+        if (!(error instanceof GuestProfileCaptureError)) throw error;
+        return { stdout: "", stderr: error.message, exitCode: 1 };
+      }
     }
     case "clipboard.read":
     case "clipboard.write":
