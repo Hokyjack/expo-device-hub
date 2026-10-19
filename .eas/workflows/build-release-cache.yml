@@ -27,7 +27,7 @@ jobs:
   build:
     name: Build packages and write the remote cache
     runs_on: macos-medium
-    image: latest
+    image: macos-tahoe-26.5-xcode-26.6
     # TURBO_TOKEN (write access to turbo.exp.host) comes from this EAS environment.
     environment: production
     env:
@@ -58,4 +58,5 @@ jobs:
         run: ./scripts/summarize-versions.ts
 
       - name: Build packages
-        run: bun run build
+        # Always rebuild on the pinned image before the Ubuntu reader uses this cache.
+        run: bun run build --force
