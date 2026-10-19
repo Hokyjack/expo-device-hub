@@ -23,6 +23,24 @@ final class SharedWebRTCEncoderTests: XCTestCase {
         return value
     }
 
+    func testExplicitDefaultDeliversThroughSharedFactoryWithZeroFallbacks() throws {
+        let factory = SharedWebRTCEncoderFactory(
+            bitrate: 1_000_000, fps: 60, h264Allowed: { true }, lowLatencyRateControl: false
+        )
+        defer { factory.stop() }
+        let info = LKRTCVideoCodecInfo(name: "H264", parameters: ["packetization-mode": "1"])
+        let proxy = try XCTUnwrap(factory.createEncoder(info))
+        XCTAssertEqual(proxy.startEncode(with: settings(), numberOfCores: 2), 0)
+        for index in 1...3 {
+            let delivered = expectation(description: "default frame \(index)")
+            proxy.setCallback { _, _ in delivered.fulfill(); return true }
+            XCTAssertEqual(proxy.encode(makeFrame(Int64(index) * 16_666_667, using: factory),
+                                         codecSpecificInfo: nil, frameTypes: []), 0)
+            wait(for: [delivered], timeout: 5)
+        }
+        XCTAssertEqual(factory.lowLatencyFallbacks(), 0)
+    }
+
     /// libwebrtc releases and re-initializes an encoder when it reconfigures a stream. A proxy
     /// that lost its packetization mode on release registered no callback afterwards and never
     /// delivered again: one viewer of eight sent no video for a whole session.

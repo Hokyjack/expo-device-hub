@@ -284,8 +284,12 @@ final class WebRTCPublisher: @unchecked Sendable {
     private var frameRatePolicy: WebRTCFrameRatePolicy
     private var targetBitrate: Int
     private var maxDimension: Int
+    private var panelCadence: PanelFrameCadence?
+    private let fixedPanel: Bool
 
-    init(maxFps: Int, targetBitrate: Int, maxDimension: Int, encodeCanvas: Dimensions) {
+    init(maxFps: Int, targetBitrate: Int, maxDimension: Int, encodeCanvas: Dimensions, fixedPanel: Bool = false) {
+        self.fixedPanel = fixedPanel
+        self.panelCadence = fixedPanel ? PanelFrameCadence() : nil
         let frameRatePolicy = WebRTCFrameRatePolicy(configuredFramesPerSecond: maxFps)
         let normalizedMaxFps = frameRatePolicy.outputFramesPerSecond
         self.frameRatePolicy = frameRatePolicy
@@ -305,7 +309,12 @@ final class WebRTCPublisher: @unchecked Sendable {
         )
         let encoderFactory = SharedWebRTCEncoderFactory(
             bitrate: targetBitrate, fps: normalizedMaxFps,
-            h264Allowed: { Self.detectedH264Support.allowed }
+            h264Allowed: { Self.detectedH264Support.allowed },
+            // The capability probe selects the VM policy, not the live encoder identity.
+            // @ref LLP 0002#capture-and-frame-flow — scope the default request to paravirtualized Duo panels.
+            lowLatencyRateControl: WebRTCH264RateControlPolicy.prefersLowLatency(
+                fixedPanel: fixedPanel, probeEncoderID: Self.detectedH264Support.encoderID
+            )
         )
         sharedEncoderFactory = encoderFactory
         let decoderFactory = LKRTCDefaultVideoDecoderFactory()
@@ -662,11 +671,15 @@ final class WebRTCPublisher: @unchecked Sendable {
 
     func requestIDR() {
         sharedEncoderFactory.requestIDR()
+        frameLock.lock()
+        panelCadence?.requestFrame()
+        frameLock.unlock()
     }
 
     /// Capture delivery. The resizer hands the frame back through `frameReady`.
-    func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime) {
+    func sendFrame(_ pixelBuffer: CVPixelBuffer, timestamp _: CMTime, panelActive: Bool? = nil) {
         frameLock.lock()
+        panelCadence?.setActive(panelActive)
         offeredFrameCount &+= 1
         let accepts = acceptsFrames
         let generation = frameAcceptanceGeneration
@@ -1025,7 +1038,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         if canvas != encodeCanvas {
             encodeCanvas = canvas
             canvasSequence &+= 1
-            sharedEncoderFactory.requestIDR()
+            requestIDR()
             canvasObserver?(canvas, canvasSequence)
         }
         // VP8 and H.264 peers receive the same input canvas; only encoding is per codec.
@@ -1064,6 +1077,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             }
             return
         }
+        let shouldSend = panelCadence?.shouldSend(atNanoseconds: nowNs) ?? true
         frameLock.unlock()
 
         // Preserve the cadence by scheduling the next tick before scaling or
@@ -1071,7 +1085,7 @@ final class WebRTCPublisher: @unchecked Sendable {
         if chained {
             scheduleFramePump(afterNs: nextDelayNs, generation: generation)
         }
-        if sessions.values.contains(where: \.isConnected) {
+        if shouldSend, sessions.values.contains(where: \.isConnected) {
             sendFrameOnQueue(frame.pixelBuffer, timestampNanoseconds: timestampNs)
         }
     }
@@ -1121,6 +1135,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             acceptsFrames = active
             frameAcceptanceGeneration &+= 1
             latestFrame = nil
+            panelCadence?.requestFrame()
             arrivalPumpPending = false
             framePumpGeneration &+= 1
             framePacer.setActive(active)
@@ -1342,6 +1357,7 @@ final class WebRTCPublisher: @unchecked Sendable {
             guard !session.isConnected else { return }
             session.isConnected = true
             self.refreshFrameAcceptance()
+            if self.fixedPanel { self.requestIDR() }
             self.applySenderParameters(to: session)
             streamLog("[webrtc] Peer connected; activePeers=\(self.sessions.values.filter(\.isConnected).count)")
         }

@@ -21,6 +21,7 @@ struct CapturedScreenInfo {
     let height: Int
     var display: SimDisplayMetadata?
     var displayProfile = SimulatorDisplayProfile()
+    var isActivePanel: Bool? = nil
 
     var recordingDeviceState: RecordingDeviceState {
         RecordingDeviceState(
@@ -54,10 +55,10 @@ actor FrameCapture {
     private var webRTCCanvasCache: Dimensions?
     private var screenObservers: [UUID: @Sendable () -> Void] = [:]
     private var frameCount: UInt64 = 0
-    /// Counted by which path produced the frame, callback or idle deadline.
     private var pickCount: UInt64 = 0
     private var pickSumNs: UInt64 = 0
     private var pickMaxNs: UInt64 = 0
+    /// Counted by which path produced the frame, callback or idle deadline.
     private var screenFrameCount: UInt64 = 0
     private var idleFrameCount: UInt64 = 0
     private var captureLastEntryNs: UInt64 = 0
@@ -98,6 +99,7 @@ actor FrameCapture {
     private var displayProfile = SimulatorDisplayProfile()
     private(set) var isFoldable = false
     private var authoritativeDisplay: CoreDeviceDisplayState?
+    private var capturedPanelActivity: Bool?
     private var displayInfoTask: Task<Void, Never>?
     private var displayRefreshTask: Task<Void, Never>?
     private var displayRefreshRequested = false
@@ -167,7 +169,7 @@ actor FrameCapture {
         displayConfigurationReady = true
         captureFrame(force: true)
         startSurfacePoller()
-        print("[capture] Frame callbacks registered + 60Hz IOSurface poll + 5fps idle floor")
+        print("[capture] Frame callbacks registered + \(fixedScreenID == nil ? 60 : 120)Hz IOSurface poll + 5fps idle floor")
     }
 
     /// Find all framebuffer display descriptors, register callbacks on each,
@@ -353,6 +355,11 @@ actor FrameCapture {
 
     private func updateDisplayInfo(_ displays: [CoreDeviceDisplayState]) {
         let integratedIDs = Set(screenMetadata.values.filter { $0.screenType == 0 }.map(\.screenID))
+        if fixedScreenID == nil, integratedIDs.count == 2, let deviceUDID {
+            let active = displays.filter { $0.isActive && integratedIDs.contains($0.screenID) }
+            ActiveDisplayObservation.shared.record(udid: deviceUDID, owner: ObjectIdentifier(self),
+                screenID: active.count == 1 ? active[0].screenID : nil, nowNs: nowNanoseconds())
+        }
         guard let active = displays.first(where: { $0.isActive && integratedIDs.contains($0.screenID) }),
               active != authoritativeDisplay else { return }
         authoritativeDisplay = active
@@ -440,7 +447,7 @@ actor FrameCapture {
     /// held the poll to 48Hz on bare metal even with nothing else running. `.strict` opts out
     /// of coalescing, which is what the frame pump needed on virtualized hosts.
     private func startSurfacePoller() {
-        let intervalNs = UInt64(SimulatorCapturePollPolicy.intervalNanoseconds)
+        let intervalNs = UInt64(SimulatorCapturePollPolicy.intervalNanoseconds(forFixedPanel: fixedScreenID != nil))
         let interval = DispatchTimeInterval.nanoseconds(Int(intervalNs))
         let first = DispatchTime.now() + interval
         pollGrid = PollDeadlineGrid(
@@ -536,7 +543,10 @@ actor FrameCapture {
             print("[capture] Framebuffer surface is back after \(Self.seconds(lostNs))")
         }
         let display = screenMetadata[key]?.applying(authoritativeDisplay)
-        let displayChanged = capturedDisplay != display
+        let panelActivity: Bool? = if isFoldable, let fixedScreenID, let deviceUDID {
+            ActiveDisplayObservation.shared.isActive(udid: deviceUDID, screenID: fixedScreenID, nowNs: nowNanoseconds())
+        } else { nil }
+        let displayChanged = capturedDisplay != display || capturedPanelActivity != panelActivity
 
         // Seed-skip: when the simulator's framebuffer content hasn't changed,
         // don't spend cycles re-encoding the same pixels back-to-back from the
@@ -571,6 +581,7 @@ actor FrameCapture {
         lastSeeds[key] = seed
         lastCaptureTime = .now
         capturedDisplay = display
+        capturedPanelActivity = panelActivity
         if dimensionsChanged {
             capturedWidth = w
             capturedHeight = h
@@ -582,7 +593,7 @@ actor FrameCapture {
         frameCount += 1
         if force { idleFrameCount += 1 } else { screenFrameCount += 1 }
         onFrame?(copy, timestamp, webRTCEncodeCanvasSize(),
-                 CapturedScreenInfo(width: w, height: h, display: display, displayProfile: displayProfile))
+                 CapturedScreenInfo(width: w, height: h, display: display, displayProfile: displayProfile, isActivePanel: panelActivity))
     }
 
     /// Snapshotting straight to the delivery size avoids moving the whole framebuffer through
@@ -712,6 +723,10 @@ actor FrameCapture {
     }
 
     func stop(preservingObservers: Bool = false) {
+        if fixedScreenID == nil, let deviceUDID {
+            ActiveDisplayObservation.shared.remove(udid: deviceUDID, owner: ObjectIdentifier(self))
+        }
+        capturedPanelActivity = nil
         captureGeneration &+= 1
         displayInfoTask?.cancel()
         displayInfoTask = nil
