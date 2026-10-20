@@ -21,6 +21,7 @@ import { basename, join } from "node:path";
 import type { CaptureStore } from "./store";
 import { assertNotOwnProxy, OwnProxyPortError, type CaptureUpstream } from "./upstream";
 import { dirnameOf } from "../runtime";
+import { isRunningOnEAS } from "../environment";
 import { withStateLockSync } from "../state-lock";
 import { DEFAULT_CAPTURE_FIELDS, type CaptureField } from "./fields";
 import {
@@ -181,7 +182,7 @@ export function mitmdumpMissingMessage(override?: string): string {
     );
   }
   // One line: the panel and the CLI both show it as the reason capture did not start.
-  if (process.env.EAS_BUILD_RUNNER === "eas-build") {
+  if (isRunningOnEAS()) {
     return "mitmproxy is not installed. Restart the EAS session with --network-capture.";
   }
   return "mitmproxy is not installed. Install it via Homebrew: brew install mitmproxy.";

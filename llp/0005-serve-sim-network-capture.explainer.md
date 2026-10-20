@@ -28,6 +28,7 @@ subsequently launched third-party apps use that proxy. Apple system apps are exc
 
 If mitmproxy is missing, the error asks users on `EAS_BUILD_RUNNER=eas-build` to restart
 the EAS session with `--network-capture`; other runners get `brew install mitmproxy`.
+The shared server helper `src/environment.ts` `isRunningOnEAS` owns this runner check.
 The panel hides an action error when it repeats the failed capture state's reason
 [observed: `src/capture/mitm-engine.ts` `mitmdumpMissingMessage`;
 `src/client/components/network-capture-tool.tsx` `visibleChangeError`].
