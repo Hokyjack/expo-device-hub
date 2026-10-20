@@ -26,8 +26,9 @@ Enabling capture starts a local mitmproxy, trusts its certificate authority in t
 subsequently launched third-party apps use that proxy. Apple system apps are excluded, and
 `URLSession.shared` bypasses capture.
 
-If mitmproxy is missing, the error asks users on `EAS_BUILD_RUNNER=eas-build` to restart
-the EAS session with `--network-capture`; other runners get `brew install mitmproxy`.
+If mitmproxy is missing on `EAS_BUILD_RUNNER=eas-build`, the error says network capture
+is not configured for this session and asks users to restart with `--network-capture`.
+Other runners get `brew install mitmproxy`.
 The shared server helper `src/environment.ts` `isRunningOnEAS` owns this runner check.
 The panel hides an action error when it repeats the failed capture state's reason
 [observed: `src/capture/mitm-engine.ts` `mitmdumpMissingMessage`;

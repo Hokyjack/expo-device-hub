@@ -136,7 +136,7 @@ describe("mitmdumpMissingMessage", () => {
   test("asks hosted EAS users to restart the session with capture", () => {
     withRunner("eas-build", () => {
       expect(mitmdumpMissingMessage()).toBe(
-        "mitmproxy is not installed. Restart the EAS session with --network-capture.",
+        "This session does not have network capture configured. Please restart the EAS session with --network-capture.",
       );
     });
   });
