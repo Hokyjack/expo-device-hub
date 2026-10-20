@@ -181,7 +181,10 @@ export function mitmdumpMissingMessage(override?: string): string {
     );
   }
   // One line: the panel and the CLI both show it as the reason capture did not start.
-  return "mitmproxy is not installed. Install it to use network capture: brew install mitmproxy";
+  if (process.env.EAS_BUILD_RUNNER === "eas-build") {
+    return "mitmproxy is not installed. Restart the EAS session with --network-capture.";
+  }
+  return "mitmproxy is not installed. Install it via Homebrew: brew install mitmproxy.";
 }
 
 function locateAddon(): string {
