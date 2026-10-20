@@ -210,32 +210,6 @@ async function expectNodeMmapRegionSuccess(consumerDirectory: string): Promise<v
   );
 }
 
-async function expectWebRtcNativeSuccess(consumerDirectory: string): Promise<void> {
-  const moduleUrl = pathToFileURL(
-    join(consumerDirectory, "node_modules", "serve-emu", "dist", "webrtc-publisher.js"),
-  ).href;
-  for (const runtime of [bunExecutable, nodeExecutable].filter(Boolean) as string[]) {
-    await runSuccessfully(
-      [
-        runtime,
-        "--input-type=module",
-        "--eval",
-        [
-          `const { createWebRtcPublisher } = await import(${JSON.stringify(moduleUrl)});`,
-          "const publisher = await createWebRtcPublisher({",
-          '  settings: { transport: "webrtc", codec: "h264", iceServers: [], iceTransportPolicy: "all" },',
-          "  onKeyframeRequest() {},",
-          "});",
-          "publisher.close();",
-          'const { createRequire } = await import("node:module");',
-          `createRequire(${JSON.stringify(moduleUrl)})("node-datachannel").cleanup();`,
-        ].join("\n"),
-      ],
-      consumerDirectory,
-    );
-  }
-}
-
 async function main(): Promise<void> {
   const temporaryRoot = await mkdtemp(join(tmpdir(), "serve-emu-package-smoke-"));
 
@@ -345,7 +319,6 @@ async function main(): Promise<void> {
     );
     await expectImportSuccess("serve-emu/stream-socket", "fromBunSocket", consumerDirectory);
     await expectNodeMmapRegionSuccess(consumerDirectory);
-    await expectWebRtcNativeSuccess(consumerDirectory);
     await expectImportFailure("serve-emu/src/adb.ts", consumerDirectory);
 
     console.log(

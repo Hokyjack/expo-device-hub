@@ -83,6 +83,9 @@
     "tailwindcss": "^4.1.11",
     "typescript": "~6.0.3"
   },
+  "trustedDependencies": [
+    "node-datachannel"
+  ],
   "vendorDependencies": {
     "serve-emu": "workspace:*",
     "@expo/serve-sim": "workspace:*"

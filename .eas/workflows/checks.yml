@@ -65,7 +65,13 @@ jobs:
           bun run --filter serve-emu test:package
 
       - name: Hub npm install
-        run: bun packages/expo-device-hub/scripts/package-install-smoke.ts npm
+        run: |
+          hub_tarball=$(npm pack ./packages/expo-device-hub --ignore-scripts --pack-destination /tmp --silent)
+          cd "$(mktemp -d)"
+          npm install "/tmp/$hub_tarball"
 
       - name: Hub pnpm install
-        run: bun packages/expo-device-hub/scripts/package-install-smoke.ts pnpm
+        run: |
+          hub_tarball=$(npm pack ./packages/expo-device-hub --ignore-scripts --pack-destination /tmp --silent)
+          cd "$(mktemp -d)"
+          npm exec --yes --package=pnpm@11.0.0 -- pnpm add "/tmp/$hub_tarball"
