@@ -22,8 +22,11 @@ window.RTCPeerConnection = class extends Peer {
 };
 const mountDashboard = () => createRoot(document.getElementById("root")!).render(<Dashboard />);
 
-if (new URL(location.href).searchParams.has("run")) {
-  void import("./scenarios").then(({ runScenarios }) => runScenarios(mountDashboard));
+const runnerUrl = new URL(location.href);
+if (runnerUrl.searchParams.has("run")) {
+  const bootstrapKey = new URLSearchParams(runnerUrl.hash.slice(1)).get("bootstrap") ?? "";
+  history.replaceState(null, "", runnerUrl.pathname + runnerUrl.search);
+  void import("./scenarios").then(({ runScenarios }) => runScenarios(mountDashboard, bootstrapKey));
 } else {
   mountDashboard();
 }

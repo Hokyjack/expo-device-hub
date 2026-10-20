@@ -146,14 +146,15 @@ test("a rejected runner does not mount a second device client or submit a result
   const browser: { __hubE2EResult?: { ok: boolean } } = {};
   stub("window", browser);
   stub("document", { getElementById: () => root });
-  stub("fetch", async (url: string) => {
+  stub("fetch", async (url: string, init: RequestInit) => {
+    expect(new Headers(init.headers).get("x-hub-e2e-bootstrap")).toBe("cli-key");
     requests.push(url);
     return new Response("A scenario runner already owns this proxy", { status: 409 });
   });
   let mounts = 0;
   await runScenarios(() => {
     mounts++;
-  });
+  }, "cli-key");
   expect(mounts).toBe(0);
   expect(requests).toEqual(["/_e2e/start"]);
   expect(browser.__hubE2EResult?.ok).toBe(false);

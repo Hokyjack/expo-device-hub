@@ -43,7 +43,11 @@ The default runner opens isolated headless Chrome. Set `HUB_E2E_BROWSER` to its
 executable when it is not at the default macOS path. To use the collaborative
 browser instead, run with `--interactive` and open the printed URL. The same
 browser scenarios run automatically; there are no manual assertion steps. The first page claims
-scenario ownership before mounting the Dashboard. Duplicate runner pages show a static
+scenario ownership before mounting the Dashboard. The printed URL carries a per-run
+bootstrap key in its fragment; the page removes it from the address bar before
+claiming ownership. The key is not served in HTML or included in wire evidence.
+The claim requires this key; fault controls and result submission require the
+claimed run ID. Unclaimed requests cannot launch or restart the fixture. Duplicate runner pages show a static
 rejection without opening device/control sockets, running faults or submitting results.
 Restart the CLI for a new run.
 

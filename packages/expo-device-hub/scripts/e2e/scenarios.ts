@@ -29,10 +29,14 @@ async function until<T>(
   throw new Error(`Timed out: ${description}`);
 }
 let runId: string | undefined;
-async function post(path: string, body: object = {}) {
+async function post(path: string, body: object = {}, headers: Record<string, string> = {}) {
   const response = await fetch("/_e2e/" + path, {
     method: "POST",
-    headers: { "content-type": "application/json", ...(runId ? { "x-hub-e2e-run": runId } : {}) },
+    headers: {
+      "content-type": "application/json",
+      ...(runId ? { "x-hub-e2e-run": runId } : {}),
+      ...headers,
+    },
     body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(`${path}: ${response.status} ${await response.text()}`);
@@ -218,7 +222,7 @@ export async function runBlurScenario() {
  * Synthetic DOM events make the same cases runnable in the collaborative browser
  * and headless runner. OS focus/trusted-event delivery is a separate acceptance check.
  */
-export async function runScenarios(mountDashboard: () => void) {
+export async function runScenarios(mountDashboard: () => void, bootstrapKey = "") {
   const cases: Array<{ name: string; durationMs: number }> = [];
   async function check(name: string, run: () => Promise<void>) {
     const started = performance.now();
@@ -227,7 +231,7 @@ export async function runScenarios(mountDashboard: () => void) {
   }
   // Claim before mounting: rejected mirrored pages must not create extra device/control sockets.
   try {
-    runId = (await post("start")).runId;
+    runId = (await post("start", {}, { "x-hub-e2e-bootstrap": bootstrapKey })).runId;
     assert(runId, "Proxy granted this runner ownership");
   } catch (error) {
     window.__hubE2EResult = { ok: false, cases, error: String(error) };

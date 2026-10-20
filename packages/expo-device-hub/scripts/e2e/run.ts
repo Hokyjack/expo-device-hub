@@ -159,7 +159,7 @@ try {
       );
     },
   });
-  const url = proxy.url + "/?run";
+  const url = proxy.runnerUrl;
   console.log(JSON.stringify({ url, artifacts, udid }));
   if (!process.argv.includes("--interactive")) browser = await openBrowser(url, artifacts);
   if (!watchdog)

@@ -39,6 +39,7 @@ export function startProxy(options: {
   start: () => void;
 }) {
   let mode: InputMode = "normal";
+  const bootstrapKey = crypto.randomUUID();
   let runId: string | null = null;
   let connections = 0;
   let controlConnections = 0;
@@ -69,6 +70,8 @@ export function startProxy(options: {
         return new Response(null, { status: 403 });
       }
       if (url.pathname === "/_e2e/start" && request.method === "POST") {
+        if (request.headers.get("x-hub-e2e-bootstrap") !== bootstrapKey)
+          return new Response("This runner needs the CLI bootstrap key", { status: 403 });
         if (runId !== null)
           return new Response("A scenario runner already owns this proxy", { status: 409 });
         runId = crypto.randomUUID();
@@ -76,10 +79,9 @@ export function startProxy(options: {
         return Response.json({ runId });
       }
       if (
-        runId !== null &&
         url.pathname.startsWith("/_e2e/") &&
         request.method === "POST" &&
-        request.headers.get("x-hub-e2e-run") !== runId
+        (runId === null || request.headers.get("x-hub-e2e-run") !== runId)
       ) {
         return new Response("This action belongs to another scenario runner", { status: 403 });
       }
@@ -337,6 +339,7 @@ export function startProxy(options: {
   });
   return {
     url: `http://127.0.0.1:${server.port}`,
+    runnerUrl: `http://127.0.0.1:${server.port}/?run#bootstrap=${bootstrapKey}`,
     snapshot: () => ({ mode, controlConnections, inputAttempts, events }),
     async close() {
       shutdown.abort();
