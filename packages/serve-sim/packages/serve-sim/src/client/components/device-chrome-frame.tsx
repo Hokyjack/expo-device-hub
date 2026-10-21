@@ -61,18 +61,14 @@ export function DeviceKitChrome({
 }) {
   const geometry = deviceKitChromeGeometry(chrome, orientation);
   const rotation = rotationDegreesForOrientation(orientation);
-  // Like Device Hub, an edge shows its icons only while the pointer is near it.
+  // Like Device Hub, an edge shows its icons only while the pointer is on one of its buttons.
   const [hoverEdge, setHoverEdge] = useState<Edge | null>(null);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(hideTimerRef.current), []);
+  // React dispatches the old target's leave before the new target's enter, so moving
+  // between two buttons on one edge keeps it shown.
   const onEdgeHover = useCallback((edge: Edge, inside: boolean) => {
-    clearTimeout(hideTimerRef.current);
-    // A short delay lets the pointer cross from the zone to an icon or a cap without flicker.
-    if (inside) setHoverEdge(edge);
-    else hideTimerRef.current = setTimeout(() => setHoverEdge(null), GLYPH_HIDE_DELAY_MS);
+    setHoverEdge((current) => (inside ? edge : current === edge ? null : current));
   }, []);
   const glyphButtons = interactive && showButtonGlyphs ? chrome.buttons.filter(hasButtonGlyph) : [];
-  const glyphEdges = [...new Set(glyphButtons.map((button) => buttonEdge(chrome, button.frame)))];
   const sideways = Math.abs(rotation) === 90;
   const artworkSize =
     sideways && containerSize
@@ -122,15 +118,6 @@ export function DeviceKitChrome({
         className="absolute"
         style={{ ...artworkStyle, zIndex: 1 }}
       >
-        {glyphEdges.map((edge) => (
-          <EdgeHoverZone
-            key={`edge-${edge}`}
-            chrome={chrome}
-            edge={edge}
-            buttons={glyphButtons.filter((button) => buttonEdge(chrome, button.frame) === edge)}
-            onHover={(inside) => onEdgeHover(edge, inside)}
-          />
-        ))}
         {chrome.buttons.filter((button) => !button.onTop).map(renderButton)}
         {/* The bezel and button artwork retain Apple's portrait coordinates;
             the whole layer rotates around the oriented frame's center. */}
@@ -269,15 +256,15 @@ function ChromeButton({
   const [pressed, setPressed] = useState(false);
   const activePointerRef = useRef<number | null>(null);
   const elRef = useRef<HTMLDivElement | null>(null);
-  const glyphRef = useRef<HTMLDivElement | null>(null);
+  const zoneRef = useRef<HTMLDivElement | null>(null);
 
   // Native (non-passive) wheel listener so it can preventDefault — turning the
   // crown scrolls the watch instead of the page.
   const onWheelRef = useRef(onWheel);
   onWheelRef.current = onWheel;
   useEffect(() => {
-    // The cap and its icon both turn the crown.
-    const targets = [elRef.current, glyphRef.current].filter((el) => el !== null);
+    // The cap and its icon area both turn the crown.
+    const targets = [elRef.current, zoneRef.current].filter((el) => el !== null);
     if (!targets.length || !onWheel) return;
     const handler = (event: WheelEvent) => {
       event.preventDefault();
@@ -291,7 +278,7 @@ function ChromeButton({
     // Keyed on presence, not identity: the handler reads onWheelRef.current,
     // so a new closure each render must not tear down and re-add the listener
     // (the parent re-renders every frame during a resize/inertia drag).
-    // `glyphMounted` attaches to the icon again when it returns after presentation.
+    // `glyphMounted` attaches to the icon area again when it returns after presentation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [!!onWheel, glyphMounted]);
   // A button is only pressable when it carries a HID code; decorative inputs
@@ -355,16 +342,18 @@ function ChromeButton({
   return (
     <>
       {glyph && (
-        <ButtonGlyph
-          ref={glyphRef}
-          chrome={chrome}
-          button={button}
-          glyph={glyph}
-          active={hovered || pressed}
-          shown={glyphShown}
-          rotation={rotation}
-          handlers={handlers}
-        />
+        <>
+          {/* The cap and this area are one button: hover, press, and wheel act the same. */}
+          <ButtonZone ref={zoneRef} chrome={chrome} button={button} handlers={handlers} />
+          <ButtonGlyph
+            chrome={chrome}
+            button={button}
+            glyph={glyph}
+            active={hovered || pressed}
+            shown={glyphShown}
+            rotation={rotation}
+          />
+        </>
       )}
       <div
         ref={elRef}
@@ -376,7 +365,7 @@ function ChromeButton({
         style={{
           ...rectStyle(chrome, button.frame, zIndex, containerSize),
           transform: tx || ty ? `translate(${tx}%, ${ty}%)` : undefined,
-          transition: "transform 0.12s ease",
+          transition: `transform ${BUTTON_TRANSITION}`,
           cursor: pressable ? "pointer" : undefined,
           pointerEvents: pressable ? "auto" : "none",
           touchAction: "none",
@@ -426,10 +415,11 @@ const GLYPH_GAP_PX = 10;
 const GLYPH_SIZE_PX = 16;
 /** How far an icon reaches past the chrome frame, so the page can keep that space clear. */
 export const GLYPH_REACH_PX = GLYPH_GAP_PX + GLYPH_SIZE_PX;
-const GLYPH_HIDE_DELAY_MS = 150;
+/** The cap's slide-out timing; the icons fade and slide with the same curve. */
+const BUTTON_TRANSITION = "0.12s ease";
 /** Device Hub's icons fade in while sliding this far out from the bezel. */
 const GLYPH_SLIDE_PX = 6;
-/** Extra hover room around the icons, outward and along the edge. */
+/** Extra room around an icon in its button's area, outward and along the edge. */
 const GLYPH_ZONE_SLACK_PX = 12;
 
 function hasButtonGlyph(button: DeviceKitChromeButton): boolean {
@@ -463,29 +453,28 @@ export function deviceKitGlyphEdges(
   return edges;
 }
 
-/** Invisible strip outside an edge; the pointer there reveals that edge's icons. */
-function EdgeHoverZone({
+/** Invisible area from the frame edge out past the icon; it acts as the button itself. */
+function ButtonZone({
   chrome,
-  edge,
-  buttons,
-  onHover,
+  button,
+  handlers,
+  ref,
 }: {
   chrome: DeviceKitChromeDescriptor;
-  edge: Edge;
-  buttons: DeviceKitChromeButton[];
-  onHover: (inside: boolean) => void;
+  button: DeviceKitChromeButton;
+  handlers: Record<string, unknown>;
+  ref?: Ref<HTMLDivElement>;
 }) {
   const { frame } = chrome;
+  const rect = button.frame;
+  const edge = buttonEdge(chrome, rect);
   const vertical = edge === "left" || edge === "right";
-  const start = Math.min(...buttons.map((b) => (vertical ? b.frame.y : b.frame.x)));
-  const end = Math.max(
-    ...buttons.map((b) => (vertical ? b.frame.y + b.frame.height : b.frame.x + b.frame.width)),
-  );
+  const start = vertical ? rect.y : rect.x;
+  const length = vertical ? rect.height : rect.width;
   const total = vertical ? frame.height : frame.width;
   const along = {
     [vertical ? "top" : "left"]: `calc(${pct(start, total)} - ${GLYPH_ZONE_SLACK_PX}px)`,
-    [vertical ? "height" : "width"]:
-      `calc(${pct(end - start, total)} + ${2 * GLYPH_ZONE_SLACK_PX}px)`,
+    [vertical ? "height" : "width"]: `calc(${pct(length, total)} + ${2 * GLYPH_ZONE_SLACK_PX}px)`,
   };
   const outward = GLYPH_REACH_PX + GLYPH_ZONE_SLACK_PX;
   const across: CSSProperties = {
@@ -496,12 +485,12 @@ function EdgeHoverZone({
   }[edge];
   return (
     <div
-      data-devicekit-edge={edge}
+      ref={ref}
+      data-devicekit-zone={button.name}
       aria-hidden
       className="absolute"
-      style={{ ...along, ...across, pointerEvents: "auto" }}
-      onPointerEnter={() => onHover(true)}
-      onPointerLeave={() => onHover(false)}
+      style={{ ...along, ...across, cursor: "pointer", pointerEvents: "auto", touchAction: "none" }}
+      {...handlers}
     />
   );
 }
@@ -513,8 +502,6 @@ function ButtonGlyph({
   active,
   shown,
   rotation,
-  handlers,
-  ref,
 }: {
   chrome: DeviceKitChromeDescriptor;
   button: DeviceKitChromeButton;
@@ -522,8 +509,6 @@ function ButtonGlyph({
   active: boolean;
   shown: boolean;
   rotation: number;
-  handlers: Record<string, unknown>;
-  ref?: Ref<HTMLDivElement>;
 }) {
   const { frame } = chrome;
   const rect = button.frame;
@@ -561,7 +546,6 @@ function ButtonGlyph({
   const Icon = glyph.icon;
   return (
     <div
-      ref={ref}
       data-devicekit-glyph={button.name}
       aria-hidden
       title={glyph.label}
@@ -572,13 +556,10 @@ function ButtonGlyph({
         height: GLYPH_SIZE_PX,
         transform,
         opacity: shown ? 1 : 0,
-        transition: "color 0.12s ease, opacity 0.18s ease, transform 0.18s ease-out",
-        cursor: "pointer",
-        // A hidden icon must not catch the pointer; its edge zone reveals it.
-        pointerEvents: shown ? "auto" : "none",
-        touchAction: "none",
+        transition: `color ${BUTTON_TRANSITION}, opacity ${BUTTON_TRANSITION}, transform ${BUTTON_TRANSITION}`,
+        // The button's area under the icon takes the pointer.
+        pointerEvents: "none",
       }}
-      {...handlers}
     >
       <div
         data-devicekit-glyph-upright=""

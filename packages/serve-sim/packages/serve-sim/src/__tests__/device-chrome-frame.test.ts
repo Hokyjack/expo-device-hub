@@ -220,10 +220,21 @@ describe("hardware button glyphs", () => {
       .filter((props) => props.style.opacity === 1)
       .map((props) => props["data-devicekit-glyph"])
       .sort();
-  const zone = (renderer: Renderer, edge: string) =>
+  type Handlers = {
+    onPointerEnter: () => void;
+    onPointerLeave: () => void;
+    onPointerDown: (event: unknown) => void;
+    onPointerUp: () => void;
+  };
+  // Each button's area outside the frame, where its icon sits.
+  const zone = (renderer: Renderer, name: string) =>
     renderer.root.find(
-      (node) => typeof node.type === "string" && node.props["data-devicekit-edge"] === edge,
-    ).props as { onPointerEnter: () => void; onPointerLeave: () => void };
+      (node) => typeof node.type === "string" && node.props["data-devicekit-zone"] === name,
+    ).props as Handlers;
+  const cap = (renderer: Renderer, label: string) =>
+    renderer.root.find(
+      (node) => typeof node.type === "string" && node.props["aria-label"] === label,
+    );
   async function pointer(handler: () => void) {
     await act(async () => handler());
   }
@@ -234,10 +245,16 @@ describe("hardware button glyphs", () => {
       interactive: true,
     });
     expect(glyphNames(renderer)).toEqual([]);
-    await pointer(zone(renderer, "right").onPointerEnter);
+    await pointer(zone(renderer, "power").onPointerEnter);
     expect(glyphNames(renderer)).toEqual(["action", "power"]);
-    await pointer(zone(renderer, "right").onPointerLeave);
-    await pointer(zone(renderer, "left").onPointerEnter);
+    // Moving to another button on the same edge keeps the edge shown.
+    await pointer(() => {
+      zone(renderer, "power").onPointerLeave();
+      zone(renderer, "action").onPointerEnter();
+    });
+    expect(glyphNames(renderer)).toEqual(["action", "power"]);
+    await pointer(zone(renderer, "action").onPointerLeave);
+    await pointer(zone(renderer, "volume-up").onPointerEnter);
     expect(glyphNames(renderer)).toEqual(["volume-up"]);
   });
 
@@ -246,26 +263,64 @@ describe("hardware button glyphs", () => {
       chrome: { ...chromeFixture(), buttons: [volumeUp, power, action] },
       interactive: true,
     });
-    const cap = renderer.root.find(
-      (node) => typeof node.type === "string" && node.props["aria-label"] === "Power",
-    ).props as { onPointerEnter: () => void };
-    await pointer(cap.onPointerEnter);
+    await pointer((cap(renderer, "Power").props as Handlers).onPointerEnter);
     expect(glyphNames(renderer)).toEqual(["action", "power"]);
     expect(glyph(renderer, "power")!.className).toContain("text-accent");
     expect(glyph(renderer, "action")!.className).not.toContain("text-accent");
   });
 
-  test("hides the icons shortly after the pointer leaves", async () => {
+  test("the icon area and the cap are one button: hover slides the cap out, leave puts it back", async () => {
+    const slidingPower = { ...power, hover: { x: 0.3, y: 0 } };
+    const presses: string[] = [];
+    const renderer = await render({
+      chrome: { ...chromeFixture(), buttons: [slidingPower] },
+      interactive: true,
+      onButton: ({ phase, button }) => presses.push(`${button.name}:${phase}`),
+    });
+    const capTransform = () => cap(renderer, "Power").props.style.transform;
+    expect(capTransform()).toBeUndefined();
+    await pointer(zone(renderer, "power").onPointerEnter);
+    expect(capTransform()).toBe("translate(30%, 0%)");
+    expect(glyph(renderer, "power")!.className).toContain("text-accent");
+    // Crossing from the area onto the cap keeps the cap out.
+    await pointer(() => {
+      zone(renderer, "power").onPointerLeave();
+      (cap(renderer, "Power").props as Handlers).onPointerEnter();
+    });
+    expect(capTransform()).toBe("translate(30%, 0%)");
+    expect(glyphNames(renderer)).toEqual(["power"]);
+    // The cap and the icon go back together, with no extra delay.
+    await pointer((cap(renderer, "Power").props as Handlers).onPointerLeave);
+    expect(capTransform()).toBeUndefined();
+    expect(glyphNames(renderer)).toEqual([]);
+    // A press in the area presses the button.
+    const area = zone(renderer, "power");
+    await pointer(() => {
+      area.onPointerEnter();
+      area.onPointerDown({
+        button: 0,
+        pointerType: "mouse",
+        pointerId: 1,
+        preventDefault() {},
+        stopPropagation() {},
+        currentTarget: { setPointerCapture() {} },
+      });
+    });
+    await pointer(zone(renderer, "power").onPointerUp);
+    expect(presses).toEqual(["power:down", "power:up"]);
+  });
+
+  test("icons fade and slide with the cap's timing and never take the pointer", async () => {
     const renderer = await render({
       chrome: { ...chromeFixture(), buttons: [power] },
       interactive: true,
     });
-    await pointer(zone(renderer, "right").onPointerEnter);
-    await pointer(zone(renderer, "right").onPointerLeave);
-    // Moving from the zone onto the icon or the cap must not flicker.
-    expect(glyphNames(renderer)).toEqual(["power"]);
-    await act(async () => Bun.sleep(250));
-    expect(glyphNames(renderer)).toEqual([]);
+    const style = glyph(renderer, "power")!.style;
+    expect(style.pointerEvents).toBe("none");
+    expect(String(style.transition)).toBe(
+      "color 0.12s ease, opacity 0.12s ease, transform 0.12s ease",
+    );
+    expect(cap(renderer, "Power").props.style.transition).toBe("transform 0.12s ease");
   });
 
   test("slides a hidden icon toward the bezel and out of pointer reach", async () => {
@@ -273,14 +328,13 @@ describe("hardware button glyphs", () => {
       chrome: { ...chromeFixture(), buttons: [volumeUp, power, home] },
       interactive: true,
     });
-    expect(glyph(renderer, "power")!.style).toMatchObject({ opacity: 0, pointerEvents: "none" });
+    expect(glyph(renderer, "power")!.style).toMatchObject({ opacity: 0 });
     expect(String(glyph(renderer, "power")!.style.transform)).toContain("translate(-6px, 0px)");
     expect(String(glyph(renderer, "volume-up")!.style.transform)).toContain("translate(6px, 0px)");
     expect(String(glyph(renderer, "home")!.style.transform)).toContain("translate(0px, -6px)");
-    await pointer(zone(renderer, "right").onPointerEnter);
-    expect(glyph(renderer, "power")!.style).toMatchObject({ opacity: 1, pointerEvents: "auto" });
+    await pointer(zone(renderer, "power").onPointerEnter);
+    expect(glyph(renderer, "power")!.style).toMatchObject({ opacity: 1 });
     expect(String(glyph(renderer, "power")!.style.transform)).not.toContain("6px");
-    expect(String(glyph(renderer, "power")!.style.transition)).toContain("opacity");
   });
 
   test("places each icon a fixed gap outside the frame edge its button is on", async () => {
@@ -288,17 +342,17 @@ describe("hardware button glyphs", () => {
       chrome: { ...chromeFixture(), buttons: [volumeUp, power, home] },
       interactive: true,
     });
-    await pointer(zone(renderer, "left").onPointerEnter);
+    await pointer(zone(renderer, "volume-up").onPointerEnter);
     expect(glyph(renderer, "volume-up")!.style).toMatchObject({
       right: "calc(100% + 10px)",
       top: "22.5%",
     });
-    await pointer(zone(renderer, "right").onPointerEnter);
+    await pointer(zone(renderer, "power").onPointerEnter);
     expect(glyph(renderer, "power")!.style).toMatchObject({
       left: "calc(100% + 10px)",
       top: "30%",
     });
-    await pointer(zone(renderer, "bottom").onPointerEnter);
+    await pointer(zone(renderer, "home").onPointerEnter);
     expect(glyph(renderer, "home")!.style).toMatchObject({
       top: "calc(100% + 10px)",
       left: "50%",
@@ -313,7 +367,7 @@ describe("hardware button glyphs", () => {
       interactive: true,
       orientation: "landscape_left",
     });
-    await pointer(zone(renderer, "right").onPointerEnter);
+    await pointer(zone(renderer, "power").onPointerEnter);
     // The slide animates; the counter-rotation must not, or a rotation would tilt the icon.
     const outer = renderer.root.find(
       (node) => typeof node.type === "string" && node.props["data-devicekit-glyph"] === "power",
@@ -344,16 +398,15 @@ describe("hardware button glyphs", () => {
     ]).toEqual(["right"]);
   });
 
-  test("turning the wheel over the Digital Crown icon turns the crown", async () => {
+  test("turning the wheel over the Digital Crown's icon area turns the crown", async () => {
     const chrome = {
       ...chromeFixture(),
       buttons: [button("digital-crown", { x: 986, y: 500, width: 14, height: 200 })],
     };
     const wheel = new Map<string, (event: unknown) => void>();
     const turns: number[] = [];
-    let renderer!: Renderer;
     await act(async () => {
-      renderer = create(
+      create(
         createElement(DeviceKitChrome, {
           chrome,
           interactive: true,
@@ -362,12 +415,7 @@ describe("hardware button glyphs", () => {
         {
           createNodeMock: (element) => {
             const props = element.props as object;
-            const kind =
-              "data-devicekit-glyph" in props
-                ? "glyph"
-                : "data-devicekit-edge" in props
-                  ? "zone"
-                  : "cap";
+            const kind = "data-devicekit-zone" in props ? "zone" : "cap";
             return {
               addEventListener: (type: string, handler: (event: unknown) => void) =>
                 type === "wheel" && wheel.set(kind, handler),
@@ -377,11 +425,10 @@ describe("hardware button glyphs", () => {
         },
       );
     });
-    // The icon stays mounted, so it turns the crown as soon as hover reveals it.
-    expect([...wheel.keys()].sort()).toEqual(["cap", "glyph"]);
-    await pointer(zone(renderer, "right").onPointerEnter);
+    // The icon area is part of the button, so the wheel there turns the crown too.
+    expect([...wheel.keys()].sort()).toEqual(["cap", "zone"]);
     let prevented = 0;
-    wheel.get("glyph")!({
+    wheel.get("zone")!({
       deltaY: 3,
       deltaMode: 0,
       preventDefault: () => prevented++,
@@ -407,7 +454,7 @@ describe("hardware button glyphs", () => {
     await act(async () => {
       renderer = create(createElement(DeviceKitChrome, props(false)), {
         createNodeMock: (element) => {
-          const kind = "data-devicekit-glyph" in (element.props as object) ? "glyph" : "other";
+          const kind = "data-devicekit-zone" in (element.props as object) ? "zone" : "other";
           return {
             addEventListener: (type: string) => type === "wheel" && listening.add(kind),
             removeEventListener: (type: string) => type === "wheel" && listening.delete(kind),
@@ -417,10 +464,10 @@ describe("hardware button glyphs", () => {
     });
     expect([...listening]).toEqual(["other"]);
     await act(async () => renderer.update(createElement(DeviceKitChrome, props(true))));
-    expect([...listening].sort()).toEqual(["glyph", "other"]);
+    expect([...listening].sort()).toEqual(["other", "zone"]);
   });
 
-  test("shows no icons or hover zones in full-screen presentation", async () => {
+  test("shows no icons or button areas in full-screen presentation", async () => {
     const renderer = await render({
       chrome: { ...chromeFixture(), buttons: [power] },
       interactive: true,
@@ -428,13 +475,13 @@ describe("hardware button glyphs", () => {
     });
     expect(
       renderer.root.findAll(
-        (node) => typeof node.type === "string" && "data-devicekit-edge" in node.props,
+        (node) => typeof node.type === "string" && "data-devicekit-zone" in node.props,
       ),
     ).toEqual([]);
     expect(glyphs(renderer)).toEqual([]);
   });
 
-  test("shows no hover zone for placeholders, inputs without a HID code, or unknown names", () => {
+  test("shows no button area for placeholders, inputs without a HID code, or unknown names", () => {
     const chrome = {
       ...chromeFixture(),
       buttons: [
@@ -444,12 +491,12 @@ describe("hardware button glyphs", () => {
     };
     expect(
       renderToStaticMarkup(createElement(DeviceKitChrome, { chrome, interactive: true })),
-    ).not.toContain("data-devicekit-edge");
+    ).not.toContain("data-devicekit-zone");
     expect(
       renderToStaticMarkup(
         createElement(DeviceKitChrome, { chrome: { ...chrome, buttons: [power] } }),
       ),
-    ).not.toContain("data-devicekit-edge");
+    ).not.toContain("data-devicekit-zone");
   });
 });
 
