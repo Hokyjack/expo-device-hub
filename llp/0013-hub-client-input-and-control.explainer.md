@@ -5,7 +5,7 @@
 **Systems:** HubClient, HubComponents, Hub
 **Author:** Gabe Debes
 **Date:** 2026-10-06
-**Revised:** 2026-10-20 (hardware buttons and DeviceKit chrome)
+**Revised:** 2026-10-20 (hardware buttons, DeviceKit chrome, and the Hub button icons)
 **Related:** LLP 0000, LLP 0003
 
 ## Summary
@@ -102,6 +102,8 @@ An Android input-only outage does not demote healthy WebRTC playback to an error
 - A button that cannot be held, such as Home, ignores `down` and presses on `up`, so one hold gesture works for every button on both platforms.
 
 `deviceChrome` exposes serve-sim's DeviceKit chrome from `/api` (the bezel, the screen opening, and each button's frame and HID code), with `assetUrl` for its images under the grid API, plus the session token when there is one. It is null on Android and when serve-sim has no chrome for the device [observed: `chrome` in serve-sim `middleware.ts` config; `deviceChrome` in `useIosDevice.ts`]. A device with more than one display (iPhone Duo) has one chrome per display in `displayVariants`, and `screen.screenId` names the active one; `deviceChromeForScreen` picks it, as serve-sim's `deviceKitChromeForScreen` does [observed: `device-chrome.ts`; serve-sim `device-chrome-frame.tsx`].
+
+The Hub draws an iOS device in that chrome and shows its hardware buttons the way serve-sim's preview does: each button has one still hit area over the button and the strip outside the frame, the icons of that edge fade and slide in while the pointer is in an area, and a press holds the button with `down` and `up`. Android Pixel frames use button rects measured on the bundled artwork, with the same behavior [observed: `FrameButtonLayer` in `hub-components/src/dashboard/hardwareButtons.tsx`; `buttons` in `DEVICE_FRAME_ASSETS`, `packages/expo-device-hub/src/Dashboard.tsx`].
 
 ## Clipboard
 
