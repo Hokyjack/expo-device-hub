@@ -88,13 +88,8 @@ const PIXEL_ASSETS = {
   },
 } as unknown as DeviceFrameAssets;
 
-async function render(
-  device: Device,
-  deviceChrome: DeviceChrome | null,
-  assets?: DeviceFrameAssets,
-) {
-  const presses: string[] = [];
-  const client = {
+function fakeClient(deviceChrome: DeviceChrome | null, presses: string[]) {
+  return {
     status: "streaming",
     inputError: null,
     screen: null,
@@ -102,17 +97,30 @@ async function render(
     pressButton: (name: HardwareButton, phase?: HardwareButtonPhase) =>
       presses.push(`${name}:${phase ?? "press"}`),
   } as unknown as DeviceClient;
+}
+
+function frame(device: Device, client: DeviceClient, assets?: DeviceFrameAssets) {
+  return (
+    <PhoneFrame
+      device={device}
+      client={client}
+      DeviceScreen={() => null}
+      displayScreen={() => null}
+      deviceFrameAssets={assets}
+    />
+  );
+}
+
+async function render(
+  device: Device,
+  deviceChrome: DeviceChrome | null,
+  assets?: DeviceFrameAssets,
+) {
+  const presses: string[] = [];
   await act(async () => {
-    renderer = create(
-      <PhoneFrame
-        device={device}
-        client={client}
-        DeviceScreen={() => null}
-        displayScreen={() => null}
-        deviceFrameAssets={assets}
-      />,
-      { createNodeMock: () => ({ setPointerCapture() {}, releasePointerCapture() {} }) },
-    );
+    renderer = create(frame(device, fakeClient(deviceChrome, presses), assets), {
+      createNodeMock: () => ({ setPointerCapture() {}, releasePointerCapture() {} }),
+    });
   });
   return presses;
 }
@@ -195,6 +203,109 @@ test("Android Pixel frames get the measured buttons with the same behavior", asy
   await pointer(zone("volumeDown").props.onPointerDown);
   await pointer(zone("volumeDown").props.onPointerCancel);
   expect(presses).toEqual(["volumeDown:down", "volumeDown:up"]);
+});
+
+test("DeviceKit buttons take the bezel edge they cross, as in serve-sim's preview", () => {
+  const face = {
+    ...chrome(),
+    buttons: [button("home", { x: 20, y: 1500, width: 100, height: 100 })],
+  };
+  // Nearest frame edge would be the left; the button is inside the body, so serve-sim says bottom.
+  expect(deviceKitFrameButtons(face).map((entry) => entry.edge)).toEqual(["bottom"]);
+  expect(deviceKitFrameButtons(chrome()).map((entry) => entry.edge)).toEqual([
+    "left",
+    "left",
+    "right",
+  ]);
+});
+
+test("adjacent buttons split their shared slack at the midpoint", async () => {
+  await render(PIXEL, null, PIXEL_ASSETS);
+  const style = (key: string) => zone(key).props.style as Record<string, string>;
+  // Volume Up ends where Volume Down starts (y=940 of 2000).
+  expect(style("volumeUp").bottom).toBe("max(calc(53.0000% - 12px), 53.0000%)");
+  expect(style("volumeDown").top).toBe("max(calc(47.0000% - 12px), 47.0000%)");
+  // A free end keeps its full slack.
+  expect(style("volumeDown").bottom).toBe("calc(46.0000% - 12px)");
+});
+
+test("a held button is released through the client that pressed it", async () => {
+  const presses = await render(PIXEL, null, PIXEL_ASSETS);
+  await pointer(zone("power").props.onPointerDown);
+  const next: string[] = [];
+  const other = { ...PIXEL, id: "android-2", name: "Pixel 9 (2)" };
+  await act(async () => renderer!.update(frame(other, fakeClient(null, next), PIXEL_ASSETS)));
+  expect(presses).toEqual(["power:down", "power:up"]);
+  // A late pointer release does not send a second up to either client.
+  await pointer(zone("power").props.onPointerUp);
+  expect(presses).toEqual(["power:down", "power:up"]);
+  expect(next).toEqual([]);
+});
+
+test("a new client object for the same device keeps the button held", async () => {
+  const presses = await render(PIXEL, null, PIXEL_ASSETS);
+  await pointer(zone("power").props.onPointerDown);
+  // StreamPanel and the device hooks hand PhoneFrame a new client object on most renders.
+  await act(async () => renderer!.update(frame(PIXEL, fakeClient(null, presses), PIXEL_ASSETS)));
+  expect(presses).toEqual(["power:down"]);
+  await pointer(zone("power").props.onPointerUp);
+  expect(presses).toEqual(["power:down", "power:up"]);
+});
+
+test("a button inside the bezel shows its own edge's icons", async () => {
+  const face = {
+    ...chrome(),
+    buttons: [...chrome().buttons, button("home", { x: 20, y: 1500, width: 100, height: 100 })],
+  };
+  await render(IPHONE, face);
+  await pointer(zone("home").props.onPointerEnter);
+  expect(shownIcons()).toEqual(["home"]);
+});
+
+test("unmounting the frame releases a held button", async () => {
+  const presses = await render(IPHONE, chrome());
+  await pointer(zone("volume-up").props.onPointerDown);
+  await act(async () => renderer!.unmount());
+  renderer = undefined;
+  expect(presses).toEqual(["volumeUp:down", "volumeUp:up"]);
+});
+
+test("window blur releases a held button", async () => {
+  const target = new EventTarget();
+  const globals = globalThis as { window?: unknown; document?: unknown };
+  const saved = { window: globals.window, document: globals.document };
+  globals.window = target;
+  globals.document = Object.assign(new EventTarget(), { hidden: false });
+  try {
+    const presses = await render(PIXEL, null, PIXEL_ASSETS);
+    await pointer(zone("volumeUp").props.onPointerDown);
+    await act(async () => {
+      target.dispatchEvent(new Event("blur"));
+    });
+    expect(presses).toEqual(["volumeUp:down", "volumeUp:up"]);
+  } finally {
+    if (renderer) await act(async () => renderer?.unmount());
+    renderer = undefined;
+    globals.window = saved.window;
+    globals.document = saved.document;
+  }
+});
+
+test("a button area works from the keyboard", async () => {
+  const presses = await render(IPHONE, chrome());
+  const area = () => zone("power");
+  expect(area().props.tabIndex).toBe(0);
+  const key = (handler: unknown, k: string, repeat = false) =>
+    act(async () => (handler as (event: object) => void)({ key: k, repeat, preventDefault() {} }));
+  await act(async () => (area().props.onFocus as () => void)());
+  expect(shownIcons()).toEqual(["power"]);
+  await key(area().props.onKeyDown, "Enter");
+  await key(area().props.onKeyDown, "Enter", true);
+  await key(area().props.onKeyUp, "Enter");
+  await key(area().props.onKeyDown, " ");
+  await act(async () => (area().props.onBlur as () => void)());
+  expect(presses).toEqual(["power:down", "power:up", "power:down", "power:up"]);
+  expect(shownIcons()).toEqual([]);
 });
 
 test("no frame means no button areas", async () => {

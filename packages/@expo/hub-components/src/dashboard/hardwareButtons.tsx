@@ -1,4 +1,12 @@
-import { type ComponentType, type CSSProperties, type PointerEvent } from "react";
+import {
+  type ComponentType,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent,
+  useCallback,
+  useEffect,
+  useRef,
+} from "react";
 import {
   type DeviceChrome,
   type DevicePlatform,
@@ -32,6 +40,8 @@ export type FrameButton = {
   button: HardwareButton;
   /** The button's rect in the frame's portrait coordinates. */
   rect: DeviceFrameRect;
+  /** The edge its icon sits beyond; the nearest frame edge when absent. */
+  edge?: FrameEdge;
 };
 
 /** Hover and press state shared by the button areas and the DeviceKit sprites. */
@@ -54,9 +64,24 @@ export function deviceKitFrameButtons(chrome: DeviceChrome): FrameButton[] {
   return chrome.buttons.flatMap((button) => {
     const mapped = DEVICEKIT_BUTTONS[button.name];
     return mapped && button.usagePage != null && button.usage != null
-      ? [{ key: button.name, button: mapped, rect: button.frame }]
+      ? [
+          {
+            key: button.name,
+            button: mapped,
+            rect: button.frame,
+            edge: deviceKitButtonEdge(chrome.body, button.frame),
+          },
+        ]
       : [];
   });
+}
+
+/** serve-sim's rule: the bezel edge a button crosses; a button inside the body is on the bottom. */
+function deviceKitButtonEdge(body: DeviceFrameRect, rect: DeviceFrameRect): FrameEdge {
+  if (rect.x < body.x) return "left";
+  if (rect.x + rect.width > body.x + body.width) return "right";
+  if (rect.y < body.y) return "top";
+  return "bottom";
 }
 
 /** The frame edge nearest a button, which its icon sits beyond. */
@@ -115,6 +140,22 @@ function percent(value: number, total: number): string {
   return `${((value / total) * 100).toFixed(4)}%`;
 }
 
+/** Browser events after which a held pointer or key can no longer send its release. */
+function listenForInputCancellation(cancel: () => void): () => void {
+  if (typeof window === "undefined" || typeof document === "undefined") return () => {};
+  const onVisibilityChange = () => {
+    if (document.hidden) cancel();
+  };
+  window.addEventListener("blur", cancel);
+  window.addEventListener("pagehide", cancel);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  return () => {
+    window.removeEventListener("blur", cancel);
+    window.removeEventListener("pagehide", cancel);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+  };
+}
+
 /**
  * Button areas and icons for one frame, drawn in its rotated artwork box so they follow the
  * device. The icons turn back upright inside that box.
@@ -127,6 +168,7 @@ export function FrameButtonLayer({
   style,
   activity,
   onActivity,
+  owner,
   onPress,
 }: {
   frame: { width: number; height: number };
@@ -136,25 +178,60 @@ export function FrameButtonLayer({
   style: CSSProperties;
   activity: FrameButtonActivity;
   onActivity: (update: (current: FrameButtonActivity) => FrameButtonActivity) => void;
+  /**
+   * The selected device's id. A change releases a button held on the previous device. Not the
+   * client object, which is new on most renders.
+   */
+  owner: string;
   onPress: (button: HardwareButton, phase: HardwareButtonPhase) => void;
 }) {
+  // The held button and the release bound to the client that pressed it, so a device switch,
+  // unmount, or lost window focus still sends its up to that client, and only once.
+  const held = useRef<{ key: string; release: () => void } | null>(null);
+  const releaseHeld = useCallback(() => {
+    const current = held.current;
+    held.current = null;
+    current?.release();
+  }, []);
+  useEffect(() => releaseHeld, [owner, releaseHeld]);
+  useEffect(() => listenForInputCancellation(releaseHeld), [releaseHeld]);
+
   const pressable = buttons.filter((entry) => iconFor(entry.button, platform));
   if (!pressable.length) return null;
   const activeKey = activity.pressed ?? activity.hovered;
   const activeEntry = pressable.find((entry) => entry.key === activeKey);
-  const shownEdge = activeEntry ? frameButtonEdge(frame, activeEntry.rect) : null;
+  const shownEdge = activeEntry ? edgeOf(frame, activeEntry) : null;
 
   return (
     <div data-frame-buttons="" style={{ ...style, pointerEvents: "none" }}>
       {pressable.map((entry) => {
-        const edge = frameButtonEdge(frame, entry.rect);
+        const edge = edgeOf(frame, entry);
         const { Icon, label } = iconFor(entry.button, platform)!;
-        const release = () => {
-          onActivity((current) =>
-            current.pressed === entry.key ? { ...current, pressed: null } : current,
-          );
-          if (activity.pressed === entry.key) onPress(entry.button, "up");
+        const press = () => {
+          releaseHeld();
+          const sendUp = onPress;
+          held.current = {
+            key: entry.key,
+            release: () => {
+              onActivity((current) =>
+                current.pressed === entry.key ? { ...current, pressed: null } : current,
+              );
+              sendUp(entry.button, "up");
+            },
+          };
+          onActivity((current) => ({ ...current, pressed: entry.key }));
+          onPress(entry.button, "down");
         };
+        const release = () => {
+          if (held.current?.key === entry.key) releaseHeld();
+        };
+        const show = () => onActivity((current) => ({ ...current, hovered: entry.key }));
+        const hide = () =>
+          onActivity((current) =>
+            current.hovered === entry.key ? { ...current, hovered: null } : current,
+          );
+        const activationKey = (event: KeyboardEvent<HTMLDivElement>) =>
+          event.key === "Enter" || event.key === " ";
         return (
           <div key={entry.key}>
             <div
@@ -162,12 +239,25 @@ export function FrameButtonLayer({
               role="button"
               aria-label={label}
               title={label}
-              style={{ ...areaStyle(frame, entry.rect, edge), position: "absolute" }}
-              onPointerEnter={() => onActivity((current) => ({ ...current, hovered: entry.key }))}
-              onPointerLeave={() => {
-                onActivity((current) =>
-                  current.hovered === entry.key ? { ...current, hovered: null } : current,
-                );
+              tabIndex={0}
+              style={{
+                ...areaStyle(frame, entry, edge, pressable),
+                position: "absolute",
+              }}
+              onPointerEnter={show}
+              onPointerLeave={hide}
+              onFocus={show}
+              onBlur={() => {
+                release();
+                hide();
+              }}
+              onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+                if (!activationKey(event)) return;
+                event.preventDefault();
+                if (!event.repeat && held.current?.key !== entry.key) press();
+              }}
+              onKeyUp={(event: KeyboardEvent<HTMLDivElement>) => {
+                if (activationKey(event)) release();
               }}
               onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
                 if (event.button !== 0 && event.pointerType === "mouse") return;
@@ -176,8 +266,7 @@ export function FrameButtonLayer({
                 try {
                   event.currentTarget.setPointerCapture(event.pointerId);
                 } catch {}
-                onActivity((current) => ({ ...current, pressed: entry.key }));
-                onPress(entry.button, "down");
+                press();
               }}
               onPointerUp={release}
               onPointerCancel={release}
@@ -199,26 +288,47 @@ export function FrameButtonLayer({
   );
 }
 
-/** From the button's inner edge out past its icon, slightly longer than the button. */
+function edgeOf(frame: { width: number; height: number }, entry: FrameButton): FrameEdge {
+  return entry.edge ?? frameButtonEdge(frame, entry.rect);
+}
+
+/**
+ * From the button's inner edge out past its icon, slightly longer than the button. Toward a
+ * neighbor on the same edge, the slack stops at the midpoint between them, so a rocker's halves
+ * do not overlap.
+ */
 function areaStyle(
   frame: { width: number; height: number },
-  rect: DeviceFrameRect,
+  entry: FrameButton,
   edge: FrameEdge,
+  all: ReadonlyArray<FrameButton>,
 ): CSSProperties {
+  const { rect } = entry;
   const vertical = edge === "left" || edge === "right";
   const total = vertical ? frame.height : frame.width;
-  const start = vertical ? rect.y : rect.x;
-  const length = vertical ? rect.height : rect.width;
+  const span = (r: DeviceFrameRect) => (vertical ? [r.y, r.y + r.height] : [r.x, r.x + r.width]);
+  const [start, end] = span(rect);
+  let before: number | null = null;
+  let after: number | null = null;
+  for (const other of all) {
+    if (other === entry || edgeOf(frame, other) !== edge) continue;
+    const [otherStart, otherEnd] = span(other.rect);
+    if (otherEnd <= start) before = Math.max(before ?? otherEnd, otherEnd);
+    if (otherStart >= end) after = Math.min(after ?? otherStart, otherStart);
+  }
+  // The inset from one end of the edge, limited by the midpoint toward a neighbor.
+  const inset = (offset: number, limit: number | null) => {
+    const slack = `calc(${percent(offset, total)} - ${AREA_SLACK_PX}px)`;
+    return limit === null ? slack : `max(${slack}, ${percent(limit, total)})`;
+  };
   const outward = FRAME_BUTTON_REACH_PX + AREA_SLACK_PX;
-  const along: CSSProperties = vertical
-    ? {
-        top: `calc(${percent(start, total)} - ${AREA_SLACK_PX}px)`,
-        height: `calc(${percent(length, total)} + ${2 * AREA_SLACK_PX}px)`,
-      }
-    : {
-        left: `calc(${percent(start, total)} - ${AREA_SLACK_PX}px)`,
-        width: `calc(${percent(length, total)} + ${2 * AREA_SLACK_PX}px)`,
-      };
+  const along: CSSProperties = {
+    [vertical ? "top" : "left"]: inset(start, before === null ? null : (before + start) / 2),
+    [vertical ? "bottom" : "right"]: inset(
+      total - end,
+      after === null ? null : total - (end + after) / 2,
+    ),
+  };
   const across: Record<FrameEdge, CSSProperties> = {
     left: {
       right: percent(frame.width - rect.x - rect.width, frame.width),

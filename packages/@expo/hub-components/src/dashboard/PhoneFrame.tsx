@@ -259,6 +259,7 @@ export function PhoneFrame({
           style={{ ...framed.artworkStyle, zIndex: 4 }}
           activity={buttonActivity}
           onActivity={setButtonActivity}
+          owner={device.id}
           onPress={(button, phase) => client.pressButton(button, phase)}
         />
       )}
