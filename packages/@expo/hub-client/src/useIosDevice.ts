@@ -753,7 +753,8 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
   const knownFaceDown =
     previewFaceDown ||
     previewTableMode === false ||
-    (viewScreen?.physicalOrientation !== undefined && viewScreen.physicalOrientation !== "facedown");
+    (viewScreen?.physicalOrientation !== undefined &&
+      viewScreen.physicalOrientation !== "facedown");
   const electedPose = physicalPose === undefined ? previewHingePose : physicalPose;
   const activeScreenId = duoIntendedScreen(
     previewHingeAngle,
