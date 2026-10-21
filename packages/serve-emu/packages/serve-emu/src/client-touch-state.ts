@@ -45,8 +45,10 @@ export class ClientTouchState {
   // cycle until its release succeeds so a late rejection cannot lose ownership.
   readonly #unreleased = new Set<TouchCycle>();
   readonly #keys = new Map<number, TouchCycle>();
-  // DOWNs of a held key not yet rejected; the hold ends only when all of them are rejected.
-  readonly #liveKeyDowns = new WeakMap<TouchCycle, number>();
+  // Every DOWN of a held key; the key counts as never pressed only when all were rejected.
+  readonly #keyDowns = new WeakMap<TouchCycle, Promise<ControlInputCompletion>[]>();
+  // Key cycles with a DOWN that reached the device; later repeats cannot change that.
+  readonly #pressedKeys = new WeakSet<TouchCycle>();
   #current: TouchInputTarget | null = null;
   #closed = false;
   #closeTask: Promise<void> | null = null;
@@ -148,24 +150,46 @@ export class ClientTouchState {
         this.#keys.set(keycode, cycle);
         this.#unreleased.add(cycle);
       }
-      this.#liveKeyDowns.set(cycle, (this.#liveKeyDowns.get(cycle) ?? 0) + 1);
+      if (this.#pressedKeys.has(cycle)) return accepted;
+      const downs = this.#keyDowns.get(cycle) ?? [];
+      this.#keyDowns.set(cycle, downs);
+      downs.push(accepted.completion);
+      // Fulfills when any DOWN reached the device. It rejects with a rejection error only when
+      // every DOWN was rejected, which tells close that nothing is left to release.
+      const anyDown = Promise.any(downs).catch((error: AggregateError) => {
+        throw (
+          error.errors.find((reason) => !(reason instanceof ControlInputRejectedError)) ??
+          error.errors.at(-1)
+        );
+      });
+      anyDown.catch(() => {});
+      cycle.down = anyDown;
+      void anyDown.then(
+        () => {
+          this.#pressedKeys.add(cycle);
+          this.#keyDowns.delete(cycle);
+        },
+        () => {},
+      );
       const completion = accepted.completion.then(
         (result) => result,
         (error: unknown) => {
           if (error instanceof ControlInputRejectedError) {
-            const live = (this.#liveKeyDowns.get(cycle) ?? 1) - 1;
-            this.#liveKeyDowns.set(cycle, live);
-            if (live === 0) {
-              cycle.downRejected = true;
-              this.#unreleased.delete(cycle);
-              if (this.#keys.get(keycode) === cycle) this.#keys.delete(keycode);
-            }
+            void anyDown.then(
+              () => {},
+              (reason: unknown) => {
+                // Only the last of a cycle's DOWNs to settle sees every one rejected.
+                if (reason instanceof ControlInputRejectedError && cycle.down === anyDown) {
+                  cycle.downRejected = true;
+                  this.#unreleased.delete(cycle);
+                  if (this.#keys.get(keycode) === cycle) this.#keys.delete(keycode);
+                }
+              },
+            );
           }
           throw error;
         },
       );
-      // Close waits on the latest DOWN; a rejected one means nothing is left to release.
-      cycle.down = completion;
       return { ...accepted, completion };
     }
     if (!held) return accepted;

@@ -374,6 +374,12 @@ export class DeviceSession {
     HidSocket,
     Map<string, { page: number; usage: number }>
   >();
+  // Per socket and button: a count of 0x04 messages in arrival order, and whether the button
+  // is down or has a release still in flight. Only the latest failed release restores a hold.
+  private readonly heldHidButtonRevisions = new WeakMap<
+    HidSocket,
+    Map<string, { revision: number; wasHeld: boolean }>
+  >();
   private readonly activeHidKeyUsageCounts = new Map<number, number>();
   private readonly axHandledKeyUsages = new WeakMap<HidSocket, Set<number>>();
   private readonly failedInputSockets = new WeakSet<HidSocket>();
@@ -1490,16 +1496,17 @@ export class DeviceSession {
           const phase = (m.phase as "down" | "up" | "press") ?? "press";
           // Track in message order: 0x04 handlers overlap, so a later `down` must not be
           // erased by an earlier `up` that finishes after it.
-          const restore = this.trackHeldButton(ws, m.page, m.usage, phase);
+          const tracked = this.trackHeldButton(ws, m.page, m.usage, phase);
           try {
             await (checked === true
               ? this.hid.buttonHidChecked(m.page, m.usage, phase)
               : this.hid.buttonHid(m.page, m.usage, phase));
           } catch (error) {
-            // A rejected checked release leaves the button held, so cleanup retries it.
-            restore();
+            // A release that fails leaves the button held, so cleanup retries it.
+            tracked.failed();
             throw error;
           }
+          tracked.succeeded();
         } else {
           await (checked === true ? this.hid.buttonChecked(m.button) : this.hid.button(m.button));
         }
@@ -2406,21 +2413,39 @@ export class DeviceSession {
     }
   }
 
-  /** Records a button's hold or release; the returned function undoes a failed release. */
-  private trackHeldButton(ws: HidSocket, page: number, usage: number, phase: string): () => void {
+  /** Records a button's hold or release in message order; report how its send ended. */
+  private trackHeldButton(
+    ws: HidSocket,
+    page: number,
+    usage: number,
+    phase: string,
+  ): { failed(): void; succeeded(): void } {
     const key = `${page}:${usage}`;
+    let states = this.heldHidButtonRevisions.get(ws);
+    if (!states) this.heldHidButtonRevisions.set(ws, (states = new Map()));
     let held = this.heldHidButtons.get(ws);
+    const previous = states.get(key);
+    // A release that follows a release still in flight inherits its hold.
+    const wasHeld = phase === "down" || !!held?.has(key) || !!previous?.wasHeld;
+    const state = { revision: (previous?.revision ?? 0) + 1, wasHeld };
+    states.set(key, state);
     if (phase === "down") {
       if (!held) this.heldHidButtons.set(ws, (held = new Map()));
       held.set(key, { page, usage });
-      return () => {};
+    } else {
+      held?.delete(key);
     }
-    const released = held?.get(key);
-    held?.delete(key);
-    return () => {
-      // Restore only if no newer `down` took its place and the socket is not cleaned up.
-      const current = this.heldHidButtons.get(ws);
-      if (released && current && !current.has(key)) current.set(key, released);
+    const latest = () => states.get(key) === state;
+    return {
+      succeeded: () => {
+        if (phase !== "down" && latest()) state.wasHeld = false;
+      },
+      failed: () => {
+        // A failed release is retried by cleanup, unless a later message decides the state or
+        // cleanup already ran.
+        const current = this.heldHidButtons.get(ws);
+        if (phase !== "down" && wasHeld && latest() && current) current.set(key, { page, usage });
+      },
     };
   }
 

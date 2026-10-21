@@ -54,6 +54,8 @@ let buttonGate: Promise<void> | undefined;
 const inputCalls: string[] = [];
 const keyEvents: { type: string; usage: number }[] = [];
 const buttonHidEvents: [number, number, string][] = [];
+// Per-call gates for buttonHid, used in order; a rejected gate fails that call.
+const buttonHidGates: Promise<void>[] = [];
 const pasteWrites: string[] = [];
 const pastedTexts: string[] = [];
 let clipboardText = "";
@@ -132,6 +134,8 @@ const addon = {
     async buttonHid(page: number, usage: number, phase: string) {
       inputCalls.push("buttonHid");
       buttonHidEvents.push([page, usage, phase]);
+      const gate = buttonHidGates.shift();
+      if (gate) await gate;
       await buttonGate;
       if (buttonError) throw buttonError;
     }
@@ -414,6 +418,7 @@ beforeEach(() => {
   inputCalls.length = 0;
   keyEvents.length = 0;
   buttonHidEvents.length = 0;
+  buttonHidGates.length = 0;
   pasteWrites.length = 0;
   pastedTexts.length = 0;
   clipboardText = "";
@@ -1442,6 +1447,70 @@ describe("button input reporting", () => {
       [12, 233, "down"],
       [12, 233, "up"],
     ]);
+  });
+
+  test("a failed release that finishes after a later release does not revive the hold", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const cli = await connect(url);
+    const hold = { button: "volume-up", page: 12, usage: 233, checked: true };
+    expect(await pressThenBarrier(cli, { ...hold, phase: "down" })).toEqual([0x91, 1]);
+    let failFirst!: () => void;
+    let passSecond!: () => void;
+    buttonHidGates.push(
+      new Promise<void>((_, reject) => {
+        failFirst = () => reject(new Error("sendCustomButton failed"));
+      }),
+      new Promise<void>((resolve) => {
+        passSecond = resolve;
+      }),
+    );
+    const send = () =>
+      cli.send(
+        Buffer.concat([Buffer.from([0x04]), Buffer.from(JSON.stringify({ ...hold, phase: "up" }))]),
+      );
+    send();
+    send();
+    await waitUntil(() => buttonHidEvents.length === 3);
+    passSecond();
+    await Bun.sleep(10);
+    failFirst();
+    await Bun.sleep(10);
+    cli.terminate();
+    await Bun.sleep(100);
+    expect(buttonHidEvents).toEqual([
+      [12, 233, "down"],
+      [12, 233, "up"],
+      [12, 233, "up"],
+    ]);
+  });
+
+  test("two failed releases keep the hold for cleanup", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const cli = await connect(url);
+    const hold = { button: "volume-up", page: 12, usage: 233, checked: true };
+    expect(await pressThenBarrier(cli, { ...hold, phase: "down" })).toEqual([0x91, 1]);
+    const failures: Array<() => void> = [];
+    for (let i = 0; i < 2; i++) {
+      buttonHidGates.push(
+        new Promise<void>((_, reject) => {
+          failures.push(() => reject(new Error("sendCustomButton failed")));
+        }),
+      );
+    }
+    const send = () =>
+      cli.send(
+        Buffer.concat([Buffer.from([0x04]), Buffer.from(JSON.stringify({ ...hold, phase: "up" }))]),
+      );
+    send();
+    send();
+    await waitUntil(() => buttonHidEvents.length === 3);
+    for (const fail of failures) fail();
+    await Bun.sleep(10);
+    cli.terminate();
+    await waitUntil(() => buttonHidEvents.length === 4);
+    expect(buttonHidEvents.at(-1)).toEqual([12, 233, "up"]);
   });
 
   test("the barrier waits for a checked button that is still being sent", async () => {

@@ -159,3 +159,20 @@ test("a repeated DOWN keeps the key held when the first DOWN is rejected", async
     h.queue.close();
   }
 });
+
+test("a rejected repeat DOWN does not hide a held key from a failed release", async () => {
+  const h = harness();
+  const owner = h.owner();
+  try {
+    await owner.enqueue(key(26, "down")).completion;
+    h.rejectNext();
+    await expect(owner.enqueue(key(26, "down")).completion).rejects.toBeInstanceOf(
+      ControlInputRejectedError,
+    );
+    h.rejectNext();
+    // The first DOWN reached the device, so a failed release must be reported.
+    await expect(owner.close()).rejects.toBeInstanceOf(ControlInputRejectedError);
+  } finally {
+    h.queue.close();
+  }
+});
