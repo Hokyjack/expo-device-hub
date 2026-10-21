@@ -367,6 +367,10 @@ describe("hardware button glyphs", () => {
     });
     // The bezel button carries the accessible name; the icon only repeats it visually.
     expect(glyph(renderer, "home")).toMatchObject({ "aria-hidden": true, title: "Home" });
+    // An inset face button's area starts at the cap, so no gap lies between cap and icon.
+    expect(zone(renderer, "home")).toMatchObject({
+      style: expect.objectContaining({ top: "92.5%", height: "calc(7.5% + 38px)" }),
+    });
   });
 
   test("keeps icons upright while the artwork rotates", async () => {
