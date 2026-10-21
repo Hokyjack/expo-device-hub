@@ -555,10 +555,9 @@ function ButtonGlyph({
     ],
   };
   const [place, shift, tuck] = placements[buttonEdge(chrome, rect)];
-  // The slide is in portrait artwork coordinates; the icon then turns upright.
-  const transform = [shift, shown ? "" : tuck, rotation ? `rotate(${-rotation}deg)` : ""]
-    .filter(Boolean)
-    .join(" ");
+  // The slide is in portrait artwork coordinates and animates. The inner element turns the
+  // icon upright without a transition, so a device rotation cannot tilt it mid-animation.
+  const transform = shown ? shift : `${shift} ${tuck}`;
   const Icon = glyph.icon;
   return (
     <div
@@ -581,7 +580,13 @@ function ButtonGlyph({
       }}
       {...handlers}
     >
-      <Icon size={GLYPH_SIZE_PX} strokeWidth={1.75} />
+      <div
+        data-devicekit-glyph-upright=""
+        className="flex"
+        style={rotation ? { transform: `rotate(${-rotation}deg)` } : undefined}
+      >
+        <Icon size={GLYPH_SIZE_PX} strokeWidth={1.75} />
+      </div>
     </div>
   );
 }

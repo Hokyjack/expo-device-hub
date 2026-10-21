@@ -314,7 +314,15 @@ describe("hardware button glyphs", () => {
       orientation: "landscape_left",
     });
     await pointer(zone(renderer, "right").onPointerEnter);
-    expect(String(glyph(renderer, "power")!.style.transform)).toContain("rotate(-90deg)");
+    // The slide animates; the counter-rotation must not, or a rotation would tilt the icon.
+    const outer = renderer.root.find(
+      (node) => typeof node.type === "string" && node.props["data-devicekit-glyph"] === "power",
+    );
+    expect(String(outer.props.style.transform)).not.toContain("rotate");
+    const upright = outer.find(
+      (node) => typeof node.type === "string" && "data-devicekit-glyph-upright" in node.props,
+    );
+    expect(upright.props.style).toEqual({ transform: "rotate(-90deg)" });
   });
 
   test("reports the edges that carry icons in the current orientation", () => {
