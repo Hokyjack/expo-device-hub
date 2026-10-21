@@ -11,7 +11,8 @@ const CLI = join(import.meta.dir, "../index.ts");
 const commands = [
   { args: ["tap", "0.5", "0.5"], messages: [0x03, 0x03, 0x11] },
   { args: ["gesture", '{"type":"begin","x":0.5,"y":0.5}'], messages: [0x03] },
-  { args: ["button", "home"], messages: [0x04, 0x11] },
+  // Older helpers cannot check a button, so the CLI keeps their timed close.
+  { args: ["button", "home"], messages: [0x04, 0x11], legacyMessages: [0x04] },
   { args: ["rotate", "portrait"], messages: [0x07] },
   { args: ["ca-debug", "blended", "on"], messages: [0x08] },
   { args: ["memory-warning"], messages: [0x09] },
@@ -30,6 +31,7 @@ async function runInput(
   legacy = false,
   target?: InputTarget,
   barrierOk = true,
+  checkedButtons = !legacy,
 ) {
   const dir = mkdtempSync(join(tmpdir(), "serve-sim-cli-admission-"));
   const shim = join(dir, "bin");
@@ -100,6 +102,7 @@ esac
         port: server.port,
         wsUrl: `ws://127.0.0.1:${server.port}/legacy/${device}/ws`,
         ...(legacy ? {} : { inputAdmission: true }),
+        ...(checkedButtons ? { checkedButtons: true } : {}),
       }),
     );
   }
@@ -184,7 +187,7 @@ test("CLI name lookup still selects a unique name case-insensitively", async () 
   expect(result.messages).toEqual([0x0c]);
 });
 
-for (const { args, messages } of commands) {
+for (const { args, messages, legacyMessages } of commands) {
   if (args[0] !== "software-keyboard") {
     test(`CLI ${args[0]} routes a simulator name to the only live stream across runtimes`, async () => {
       const result = await runInput(args, /* admit */ true, /* legacy */ false, {
@@ -220,7 +223,7 @@ for (const { args, messages } of commands) {
     const result = await runInput(args, /* admit */ true, /* legacy */ true);
     expect(result.exitCode).toBe(0);
     expect(result.sentBeforeAdmission).toBe(true);
-    expect(result.messages).toEqual(messages);
+    expect(result.messages).toEqual(legacyMessages ?? messages);
   });
 }
 
@@ -238,12 +241,29 @@ test("CLI button sends the HID code of a device-frame button with the checked fl
   expect(result.buttons).toEqual([{ button: "volume-up", page: 12, usage: 233, checked: true }]);
 });
 
-test("CLI button refuses an unknown name before connecting", async () => {
-  const result = await runInput(["button", "nonsense-button"], /* admit */ true);
-  expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain('Unknown button "nonsense-button"');
-  expect(result.stderr).toContain("lock");
-  expect(result.connections).toEqual([]);
+for (const name of ["nonsense-button", "constructor", "toString"]) {
+  test(`CLI button refuses the unknown name ${name} before connecting`, async () => {
+    const result = await runInput(["button", name], /* admit */ true);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(`Unknown button "${name}"`);
+    expect(result.stderr).toContain("lock");
+    expect(result.connections).toEqual([]);
+  });
+}
+
+test("CLI button on an admitted helper without checked buttons warns and keeps the old send", async () => {
+  const result = await runInput(
+    ["button", "lock"],
+    /* admit */ true,
+    /* legacy */ false,
+    undefined,
+    /* barrierOk */ false,
+    /* checkedButtons */ false,
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).toContain("cannot report button failures");
+  expect(result.messages).toEqual([0x04]);
+  expect(result.buttons).toEqual([{ button: "lock" }]);
 });
 
 test("an open transport without admission fails by the deadline and terminates", async () => {

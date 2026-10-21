@@ -481,6 +481,15 @@ the one before Copy. A successful barrier means the host send succeeded; it is
 not evidence that the guest handled the button [observed: `src/button-input.ts`,
 `DeviceSession.handleHidMessage`, `NativeHid.buttonChecked`].
 
+Only the CoreDevice button transport rejects a failed send. The Indigo
+transport, used without CoreDevice touch, logs a missing symbol or a nil
+message and returns, so a checked button still succeeds there [observed:
+`HIDInjector.sendButtonHID`, `HIDInjector.sendButton`]. Helpers that fail a
+checked button advertise `checkedButtons: true` in their state record. An older
+helper ignores `checked` and does not order `0x04` before the barrier, so
+against it the CLI prints a warning and keeps the timed close [observed:
+`src/state.ts`, `button` in `src/index.ts`].
+
 ### Simulator settings and device actions
 
 Each simulator setting in the sidebar has a read action and a write action on

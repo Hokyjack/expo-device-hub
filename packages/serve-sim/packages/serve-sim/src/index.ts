@@ -1146,7 +1146,7 @@ const HID_BUTTON_CODES: Record<string, { page: number; usage: number }> = {
 const NAMED_BUTTONS = ["home", "swipe_home", "app_switcher", "lock", "siri", "side_button"];
 
 async function button(buttonName = "home", deviceArg?: string) {
-  if (!NAMED_BUTTONS.includes(buttonName) && !(buttonName in HID_BUTTON_CODES)) {
+  if (!NAMED_BUTTONS.includes(buttonName) && !Object.hasOwn(HID_BUTTON_CODES, buttonName)) {
     console.error(
       `Unknown button "${buttonName}". Use one of: ${[...NAMED_BUTTONS, ...Object.keys(HID_BUTTON_CODES)].join(", ")}.`,
     );
@@ -1161,6 +1161,11 @@ async function button(buttonName = "home", deviceArg?: string) {
   const hid = HID_BUTTON_CODES[buttonName];
   const payload = hid ? { button: buttonName, ...hid } : { button: buttonName };
 
+  if (state.checkedButtons !== true) {
+    // An older helper ignores `checked` and would acknowledge a failed send.
+    console.error("This serve-sim server cannot report button failures. Restart it to get them.");
+    return sendHelperMessage(state, helperMessage(0x04, payload));
+  }
   return sendButtonToWs(state, payload);
 }
 
