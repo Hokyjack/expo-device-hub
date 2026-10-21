@@ -1750,6 +1750,8 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     // A request that loads off screen while the visible <img> keeps its last frame.
     let probe: HTMLImageElement | null = null;
+    // After a failed request, the frame on screen is old until a new request paints.
+    let failed = false;
     const session = screenSessionKeyRef.current;
     const img = imgRef.current;
 
@@ -1762,8 +1764,8 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     };
 
     const markStreaming = () => {
-      // While a probe loads, the visible frame is the old one.
-      if (cancelled || settled || probe) return;
+      // While a probe loads, or after a failure, the visible frame is the old one.
+      if (cancelled || settled || probe || failed) return;
       const el = imgRef.current;
       if (!el || el.naturalWidth === 0 || el.naturalHeight === 0) return;
       settled = true;
@@ -1794,6 +1796,8 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
       if (!visible || !url) return;
       // An <img> without a frame has nothing to keep; a detached image needs `Image`.
       if (!(visible.complete && visible.naturalWidth > 0) || typeof Image === "undefined") {
+        // The new request paints from an empty element, so its frame is new.
+        failed = false;
         applyStreamSrc();
         return;
       }
@@ -1812,6 +1816,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     const handOver = (candidate: HTMLImageElement, visible: HTMLImageElement, next: string) => {
       if (cancelled || probe !== candidate || candidate.naturalWidth === 0) return;
       stopProbe();
+      failed = false;
       // The visible <img> keeps its current picture until the new request paints.
       visible.src = next;
       markStreaming();
@@ -1820,6 +1825,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     const onError = () => {
       if (cancelled) return;
       settled = false;
+      failed = true;
       setStatus("connecting");
       setError(null);
       scheduleRetry();
