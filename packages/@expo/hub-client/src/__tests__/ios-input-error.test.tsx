@@ -194,6 +194,23 @@ test("a rejected input socket reports inputError until a later socket is admitte
   expect(client().inputError).toBeNull();
 });
 
+test("the screen keeps serve-sim's active display id, even when only that id changes", async () => {
+  const { client, helperSockets } = await renderIosClient();
+  const socket = helperSockets()[0]!;
+  socket.readyState = 1;
+  await act(async () => socket.onopen?.());
+  const send = (screenId: number) =>
+    act(async () =>
+      socket.onmessage?.({
+        data: configFrame({ width: 1000, height: 1000, orientation: "portrait", screenId }),
+      }),
+    );
+  await send(1);
+  expect(client().screen?.screenId).toBe(1);
+  await send(3);
+  expect(client().screen?.screenId).toBe(3);
+});
+
 test("serve-sim inputUnavailable in the screen config reports inputError", async () => {
   const { client, helperSockets } = await renderIosClient();
   const socket = helperSockets()[0]!;

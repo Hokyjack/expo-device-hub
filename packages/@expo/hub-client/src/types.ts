@@ -51,6 +51,8 @@ export interface ScreenSize {
   height: number;
   /** Last known orientation, when the backend reports it (serve-sim). */
   orientation?: DeviceOrientation;
+  /** serve-sim's active display, for a device with more than one (iPhone Duo). */
+  screenId?: number;
 }
 
 /** A simulator/emulator the server reports as running. */
@@ -503,12 +505,18 @@ export interface DeviceChrome {
   } | null;
   corner: { width: number; height: number } | null;
   buttons: DeviceChromeButton[];
+  /** The display this chrome describes, on a device with more than one. */
+  screenId?: number;
+  /** The chrome of each other display, by serve-sim screen id; see `deviceChromeForScreen`. */
+  displayVariants?: Record<number, DeviceChrome>;
   /** URL of one of this chrome's images, ready for an `<img>`. */
   assetUrl: (image: string) => string;
 }
 
 /** {@link DeviceChrome} as serve-sim's `/api` sends it, before the client adds image URLs. */
-export type DeviceChromeDescriptor = Omit<DeviceChrome, "assetUrl">;
+export type DeviceChromeDescriptor = Omit<DeviceChrome, "assetUrl" | "displayVariants"> & {
+  displayVariants?: Record<number, DeviceChromeDescriptor>;
+};
 
 /**
  * Device system appearance. Binary on purpose — the Hub exposes a plain

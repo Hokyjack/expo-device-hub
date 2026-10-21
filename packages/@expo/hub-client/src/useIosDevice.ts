@@ -1513,7 +1513,8 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
             setScreen((prev) =>
               prev?.width === c.width &&
               prev.height === c.height &&
-              prev.orientation === c.orientation
+              prev.orientation === c.orientation &&
+              prev.screenId === c.screenId
                 ? prev
                 : c,
             );
@@ -2001,21 +2002,27 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
   // ── Running simulators (middleware /grid/api) ──
   const gridApiUrl = config?.gridApiUrl ?? null;
   const chromeDescriptor = config?.chrome ?? null;
-  const deviceChrome = useMemo<DeviceChrome | null>(
-    () =>
-      chromeDescriptor && gridApiUrl
-        ? {
-            ...chromeDescriptor,
-            // serve-sim rasterizes the chrome's PDFs; v=2 matches its own client's cache key.
-            assetUrl: (image: string) =>
-              withSessionTokenQuery(
-                `${gridApiUrl}/devicekit-chrome?chrome=${encodeURIComponent(chromeDescriptor.identifier)}&image=${encodeURIComponent(image)}&v=2`,
-                token,
-              ),
-          }
-        : null,
-    [chromeDescriptor, gridApiUrl, token],
-  );
+  const deviceChrome = useMemo<DeviceChrome | null>(() => {
+    if (!chromeDescriptor || !gridApiUrl) return null;
+    const withImages = (descriptor: DeviceChromeDescriptor): DeviceChrome => ({
+      ...descriptor,
+      displayVariants: descriptor.displayVariants
+        ? Object.fromEntries(
+            Object.entries(descriptor.displayVariants).map(([id, variant]) => [
+              id,
+              withImages(variant),
+            ]),
+          )
+        : undefined,
+      // serve-sim rasterizes the chrome's PDFs; v=2 matches its own client's cache key.
+      assetUrl: (image: string) =>
+        withSessionTokenQuery(
+          `${gridApiUrl}/devicekit-chrome?chrome=${encodeURIComponent(descriptor.identifier)}&image=${encodeURIComponent(image)}&v=2`,
+          token,
+        ),
+    });
+    return withImages(chromeDescriptor);
+  }, [chromeDescriptor, gridApiUrl, token]);
   useEffect(() => {
     if (!gridApiUrl) {
       setDevices(PLACEHOLDER_DEVICES);

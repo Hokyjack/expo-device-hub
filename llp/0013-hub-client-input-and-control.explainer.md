@@ -101,7 +101,7 @@ An Android input-only outage does not demote healthy WebRTC playback to an error
 - Android sends volume and a held power button as serve-emu `key` messages with an optional `down`/`up` action; a plain power press keeps `{ type: "power" }` [observed: `BUTTON_KEYCODE` in `useAndroidDevice.ts`; `case "key"` in serve-emu `input.ts`].
 - A button that cannot be held, such as Home, ignores `down` and presses on `up`, so one hold gesture works for every button on both platforms.
 
-`deviceChrome` exposes serve-sim's DeviceKit chrome from `/api` (the bezel, the screen opening, and each button's frame and HID code), with `assetUrl` for its images under the grid API, plus the session token when there is one. It is null on Android and when serve-sim has no chrome for the device [observed: `chrome` in serve-sim `middleware.ts` config; `deviceChrome` in `useIosDevice.ts`].
+`deviceChrome` exposes serve-sim's DeviceKit chrome from `/api` (the bezel, the screen opening, and each button's frame and HID code), with `assetUrl` for its images under the grid API, plus the session token when there is one. It is null on Android and when serve-sim has no chrome for the device [observed: `chrome` in serve-sim `middleware.ts` config; `deviceChrome` in `useIosDevice.ts`]. A device with more than one display (iPhone Duo) has one chrome per display in `displayVariants`, and `screen.screenId` names the active one; `deviceChromeForScreen` picks it, as serve-sim's `deviceKitChromeForScreen` does [observed: `device-chrome.ts`; serve-sim `device-chrome-frame.tsx`].
 
 ## Clipboard
 

@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
+import { deviceChromeForScreen } from "../device-chrome";
 import { iosStreamCapabilities, useIosDeviceClient } from "../useIosDevice";
 import { type DeviceClient, type DeviceConnectionOptions } from "../types";
 import { createGlobalStubs } from "./test-globals";
@@ -130,6 +131,25 @@ test("the iOS client exposes serve-sim's DeviceKit chrome with token-aware image
     image: "X_Power BTN",
   });
   expect(url.searchParams.get("token")).toBe("secret");
+});
+
+test("each display variant of a chrome gets its own image URLs, and the screen picks it", async () => {
+  const inner = { identifier: "phone15-inner", frame: { width: 2000, height: 2000 }, buttons: [] };
+  const chrome = {
+    identifier: "phone15",
+    screenId: 1,
+    frame: { width: 1000, height: 2000 },
+    buttons: [],
+    displayVariants: { 3: inner },
+  };
+  const hub = await controlledClient();
+  await hub.resolve(0, undefined, "device-1", { chrome, basePath: "/vendor/serve-sim" });
+  const variant = hub.client.deviceChrome!.displayVariants![3]!;
+  expect(variant).toMatchObject(inner);
+  expect(new URL(variant.assetUrl("Inner")).searchParams.get("chrome")).toBe("phone15-inner");
+  expect(deviceChromeForScreen(hub.client.deviceChrome!, 3)).toBe(variant);
+  expect(deviceChromeForScreen(hub.client.deviceChrome!, 1)).toBe(hub.client.deviceChrome!);
+  expect(deviceChromeForScreen(hub.client.deviceChrome!, undefined)).toBe(hub.client.deviceChrome!);
 });
 
 test("the iOS client reports no chrome when serve-sim has none", async () => {
