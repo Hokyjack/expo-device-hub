@@ -258,8 +258,9 @@ function ChromeButton({
     // Keyed on presence, not identity: the handler reads onWheelRef.current,
     // so a new closure each render must not tear down and re-add the listener
     // (the parent re-renders every frame during a resize/inertia drag).
+    // `showGlyph` re-attaches when the icon remounts after presentation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [!!onWheel]);
+  }, [!!onWheel, showGlyph]);
   // A button is only pressable when it carries a HID code; decorative inputs
   // (rare) still render but don't intercept pointer events.
   const pressable = interactive && button.usagePage != null && button.usage != null;

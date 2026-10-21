@@ -296,6 +296,36 @@ describe("hardware button glyphs", () => {
     expect(prevented).toBe(1);
   });
 
+  test("the Digital Crown icon turns the crown again after presentation ends", async () => {
+    const chrome = {
+      ...chromeFixture(),
+      buttons: [button("digital-crown", { x: 986, y: 500, width: 14, height: 200 })],
+    };
+    const listening = new Set<string>();
+    const turns: number[] = [];
+    const props = (showButtonGlyphs: boolean) => ({
+      chrome,
+      interactive: true,
+      showButtonGlyphs,
+      onCrownWheel: (deltaY: number) => turns.push(deltaY),
+    });
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(createElement(DeviceKitChrome, props(false)), {
+        createNodeMock: (element) => {
+          const kind = "data-devicekit-glyph" in (element.props as object) ? "glyph" : "cap";
+          return {
+            addEventListener: (type: string) => type === "wheel" && listening.add(kind),
+            removeEventListener: (type: string) => type === "wheel" && listening.delete(kind),
+          };
+        },
+      });
+    });
+    expect([...listening]).toEqual(["cap"]);
+    await act(async () => renderer.update(createElement(DeviceKitChrome, props(true))));
+    expect([...listening].sort()).toEqual(["cap", "glyph"]);
+  });
+
   test("hides icons when asked, for full-screen presentation", () => {
     const chrome = {
       ...chromeFixture(),
