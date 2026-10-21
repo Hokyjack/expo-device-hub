@@ -5,7 +5,7 @@
 **Systems:** ServeSim, HubClient
 **Author:** Gabe Debes
 **Date:** 2026-09-23
-**Revised:** 2026-10-15 (rotation readback and app actions; clipboard; server-wide preview sharing; capture reboot status and recording admission; device-state recording manifest; settings and device actions; action catalog)
+**Revised:** 2026-10-20 (checked CLI buttons); 2026-10-15 (rotation readback and app actions; clipboard; server-wide preview sharing; capture reboot status and recording admission; device-state recording manifest; settings and device actions; action catalog)
 **Related:** LLP 0001, LLP 0002
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
@@ -468,6 +468,19 @@ calls cannot form a drag because disconnect releases that connection's touch.
 Tap and typing also wait for an input-completion barrier; a disconnect or failed
 barrier reports failure instead of success for input still waiting in the queue.
 
+`serve-sim button` refuses a name that neither `HIDInjector.sendButton` nor
+the device-frame codes handle, before it connects; the native code only logs
+such a name. For a valid name it adds `checked: true` to its `0x04` message, then sends the
+`0x11` barrier on the same connection and waits for `0x91`. The server sends a
+checked button with `buttonChecked`/`buttonHidChecked`, which reject instead of
+swallowing the error, so a failed send fails the barrier and the command exits
+non-zero. `0x04` is ordered input, so the barrier waits for a button that is
+still being sent. Viewer buttons omit `checked`; their errors stay in the server
+log and never reject, so they cannot fail a viewer's later barrier, for example
+the one before Copy. A successful barrier means the host send succeeded; it is
+not evidence that the guest handled the button [observed: `src/button-input.ts`,
+`DeviceSession.handleHidMessage`, `NativeHid.buttonChecked`].
+
 ### Simulator settings and device actions
 
 Each simulator setting in the sidebar has a read action and a write action on
@@ -500,8 +513,8 @@ admission flag stay unchanged, including for legacy helpers [observed:
 `softwareKeyboard` in `src/index.ts`].
 
 The CLI tap, gesture, button, rotate, CA debug and memory-warning senders reuse
-this live-name selection and input admission path [observed: `sendHelperMessage`
-and its callers in `src/index.ts`].
+this live-name selection and input admission path [observed: `sendHelperMessage`,
+`sendTouchGestureToWs`, `sendButtonToWs` and their callers in `src/index.ts`].
 
 ### Clipboard actions
 

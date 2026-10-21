@@ -24,6 +24,7 @@ import { extname, join, resolve } from "path";
 import WebSocket from "ws";
 import { onCliInputReady } from "./socket/cli-input";
 import { TouchGesture, sendTouchGestureToWs } from "./touch-gesture";
+import { sendButtonToWs } from "./button-input";
 import {
   stateDir,
   stateFileForDevice,
@@ -1141,7 +1142,16 @@ const HID_BUTTON_CODES: Record<string, { page: number; usage: number }> = {
   "left-side-button": { page: 65281, usage: 512 },
 };
 
+// Names HIDInjector.sendButton handles; it only logs any other name.
+const NAMED_BUTTONS = ["home", "swipe_home", "app_switcher", "lock", "siri", "side_button"];
+
 async function button(buttonName = "home", deviceArg?: string) {
+  if (!NAMED_BUTTONS.includes(buttonName) && !(buttonName in HID_BUTTON_CODES)) {
+    console.error(
+      `Unknown button "${buttonName}". Use one of: ${[...NAMED_BUTTONS, ...Object.keys(HID_BUTTON_CODES)].join(", ")}.`,
+    );
+    process.exit(1);
+  }
   const state = readDeviceState(deviceArg);
   if (!state) {
     console.error("No serve-sim server running. Run `serve-sim` first.");
@@ -1151,7 +1161,7 @@ async function button(buttonName = "home", deviceArg?: string) {
   const hid = HID_BUTTON_CODES[buttonName];
   const payload = hid ? { button: buttonName, ...hid } : { button: buttonName };
 
-  return sendHelperMessage(state, helperMessage(0x04, payload));
+  return sendButtonToWs(state, payload);
 }
 
 // Send a CoreAnimation debug option toggle to the helper, which invokes

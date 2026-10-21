@@ -11,7 +11,7 @@ const CLI = join(import.meta.dir, "../index.ts");
 const commands = [
   { args: ["tap", "0.5", "0.5"], messages: [0x03, 0x03, 0x11] },
   { args: ["gesture", '{"type":"begin","x":0.5,"y":0.5}'], messages: [0x03] },
-  { args: ["button", "home"], messages: [0x04] },
+  { args: ["button", "home"], messages: [0x04, 0x11] },
   { args: ["rotate", "portrait"], messages: [0x07] },
   { args: ["ca-debug", "blended", "on"], messages: [0x08] },
   { args: ["memory-warning"], messages: [0x09] },
@@ -24,7 +24,13 @@ type InputTarget = {
   liveDevices: string[];
 };
 
-async function runInput(args: string[], admit: boolean, legacy = false, target?: InputTarget) {
+async function runInput(
+  args: string[],
+  admit: boolean,
+  legacy = false,
+  target?: InputTarget,
+  barrierOk = true,
+) {
   const dir = mkdtempSync(join(tmpdir(), "serve-sim-cli-admission-"));
   const shim = join(dir, "bin");
   mkdirSync(shim);
@@ -46,6 +52,7 @@ esac
     { mode: 0o755 },
   );
   const messages: number[] = [];
+  const buttons: unknown[] = [];
   const connections: string[] = [];
   let admitted = false;
   let sentBeforeAdmission = false;
@@ -77,8 +84,10 @@ esac
       },
       message(socket, data) {
         if (!admitted) sentBeforeAdmission = true;
-        messages.push(Buffer.from(data)[0]!);
-        if (Buffer.from(data)[0] === 0x11) socket.send(Buffer.from([0x91, 1]));
+        const frame = Buffer.from(data);
+        messages.push(frame[0]!);
+        if (frame[0] === 0x04) buttons.push(JSON.parse(frame.subarray(1).toString()));
+        if (frame[0] === 0x11) socket.send(Buffer.from([0x91, barrierOk ? 1 : 0]));
       },
     },
   });
@@ -105,7 +114,7 @@ esac
       new Response(child.stderr).text(),
       new Response(child.stdout).text(),
     ]);
-    return { exitCode, stderr, messages, sentBeforeAdmission, connections };
+    return { exitCode, stderr, messages, buttons, sentBeforeAdmission, connections };
   } finally {
     for (const timer of timers) clearTimeout(timer);
     server.stop(true);
@@ -214,6 +223,28 @@ for (const { args, messages } of commands) {
     expect(result.messages).toEqual(messages);
   });
 }
+
+test("CLI button asks for a checked send and exits non-zero when the barrier reports failure", async () => {
+  const result = await runInput(["button", "lock"], /* admit */ true, false, undefined, false);
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toMatch(/^error: Simulator button input failed\./m);
+  expect(result.messages).toEqual([0x04, 0x11]);
+  expect(result.buttons).toEqual([{ button: "lock", checked: true }]);
+});
+
+test("CLI button sends the HID code of a device-frame button with the checked flag", async () => {
+  const result = await runInput(["button", "volume-up"], /* admit */ true);
+  expect(result.exitCode).toBe(0);
+  expect(result.buttons).toEqual([{ button: "volume-up", page: 12, usage: 233, checked: true }]);
+});
+
+test("CLI button refuses an unknown name before connecting", async () => {
+  const result = await runInput(["button", "nonsense-button"], /* admit */ true);
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain('Unknown button "nonsense-button"');
+  expect(result.stderr).toContain("lock");
+  expect(result.connections).toEqual([]);
+});
 
 test("an open transport without admission fails by the deadline and terminates", async () => {
   let terminated = false;
