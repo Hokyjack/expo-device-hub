@@ -385,6 +385,23 @@ async function admit(socket: FakeSocket) {
   await act(async () => socket.onmessage?.({ data: Uint8Array.of(0x83).buffer }));
 }
 
+test("a held hardware button sends down and up with its HID code", async () => {
+  const { client, helperSockets } = await renderIosClient();
+  const socket = helperSockets()[0]!;
+  await admit(socket);
+  await act(async () => {
+    client().pressButton("volumeUp", "down");
+    client().pressButton("volumeUp", "up");
+  });
+  const sent = socket.sent
+    .filter((data) => new Uint8Array(data)[0] === 0x04)
+    .map((data) => JSON.parse(new TextDecoder().decode(new Uint8Array(data).subarray(1))));
+  expect(sent).toEqual([
+    { button: "volume-up", page: 12, usage: 233, phase: "down" },
+    { button: "volume-up", page: 12, usage: 233, phase: "up" },
+  ]);
+});
+
 test("fresh controls entered before discovery wait for input admission", async () => {
   let release!: () => void;
   const helper = {

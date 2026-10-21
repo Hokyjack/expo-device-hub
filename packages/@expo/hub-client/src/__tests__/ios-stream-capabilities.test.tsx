@@ -113,6 +113,31 @@ for (const { transport, webrtc } of [
   });
 }
 
+test("the iOS client exposes serve-sim's DeviceKit chrome with token-aware image URLs", async () => {
+  const chrome = {
+    identifier: "phone11",
+    frame: { width: 1000, height: 2000 },
+    buttons: [{ name: "power", image: "Power", usagePage: 12, usage: 48 }],
+  };
+  const hub = await controlledClient({ token: "secret" });
+  expect(hub.client.deviceChrome).toBeNull();
+  await hub.resolve(0, undefined, "device-1", { chrome, basePath: "/vendor/serve-sim" });
+  expect(hub.client.deviceChrome).toMatchObject(chrome);
+  const url = new URL(hub.client.deviceChrome!.assetUrl("X_Power BTN"));
+  expect(url.pathname).toBe("/vendor/serve-sim/grid/api/devicekit-chrome");
+  expect(Object.fromEntries(url.searchParams)).toMatchObject({
+    chrome: "phone11",
+    image: "X_Power BTN",
+  });
+  expect(url.searchParams.get("token")).toBe("secret");
+});
+
+test("the iOS client reports no chrome when serve-sim has none", async () => {
+  const hub = await controlledClient();
+  await hub.resolve(0, undefined, "device-1", { chrome: null });
+  expect(hub.client.deviceChrome).toBeNull();
+});
+
 async function controlledClient(
   options: Partial<DeviceConnectionOptions> = {},
   fakeTimers = false,
