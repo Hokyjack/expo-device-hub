@@ -198,6 +198,12 @@ export function FrameButtonLayer({
   useEffect(() => listenForInputCancellation(releaseHeld), [releaseHeld]);
 
   const pressable = buttons.filter((entry) => iconFor(entry.button, platform));
+  // A removed area can no longer receive its pointer's release, so its hold ends here.
+  const pressableKeys = pressable.map((entry) => entry.key).join("\n");
+  useEffect(() => {
+    const current = held.current;
+    if (current && !pressableKeys.split("\n").includes(current.key)) releaseHeld();
+  }, [pressableKeys, releaseHeld]);
   if (!pressable.length) return null;
   const activeKey = activity.pressed ?? activity.hovered;
   const activeEntry = pressable.find((entry) => entry.key === activeKey);
@@ -233,11 +239,17 @@ export function FrameButtonLayer({
           held.current.sources.delete(source);
           if (!held.current.sources.size) releaseHeld();
         };
-        // Focus loss ends the keys' holds; a captured pointer still sends its own release.
-        const releaseKeys = () => {
+        // A captured pointer's release always reaches this area. A pointer without capture
+        // ("free-pointer") may be released elsewhere, so leaving the area ends its hold.
+        const releasePointer = (id: number) => {
+          release(`pointer:${id}`);
+          release(`free-pointer:${id}`);
+        };
+        // Focus loss ends the keys' and uncaptured pointers' holds, not a captured pointer's.
+        const releaseUnreachable = () => {
           if (held.current?.key !== entry.key) return;
           for (const source of held.current.sources) {
-            if (source.startsWith("key:")) held.current.sources.delete(source);
+            if (!source.startsWith("pointer:")) held.current.sources.delete(source);
           }
           if (!held.current.sources.size) releaseHeld();
         };
@@ -261,10 +273,13 @@ export function FrameButtonLayer({
                 position: "absolute",
               }}
               onPointerEnter={show}
-              onPointerLeave={hide}
+              onPointerLeave={(event: PointerEvent<HTMLDivElement>) => {
+                release(`free-pointer:${event.pointerId}`);
+                hide();
+              }}
               onFocus={show}
               onBlur={() => {
-                releaseKeys();
+                releaseUnreachable();
                 hide();
               }}
               onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
@@ -279,20 +294,21 @@ export function FrameButtonLayer({
                 if (event.button !== 0 && event.pointerType === "mouse") return;
                 event.preventDefault();
                 event.stopPropagation();
+                let captured = true;
                 try {
                   event.currentTarget.setPointerCapture(event.pointerId);
-                } catch {}
-                press(`pointer:${event.pointerId}`);
+                } catch {
+                  captured = false;
+                }
+                press(`${captured ? "pointer" : "free-pointer"}:${event.pointerId}`);
               }}
-              onPointerUp={(event: PointerEvent<HTMLDivElement>) =>
-                release(`pointer:${event.pointerId}`)
-              }
+              onPointerUp={(event: PointerEvent<HTMLDivElement>) => releasePointer(event.pointerId)}
               onPointerCancel={(event: PointerEvent<HTMLDivElement>) =>
-                release(`pointer:${event.pointerId}`)
+                releasePointer(event.pointerId)
               }
               // After capture is lost, this pointer's up may never reach the area.
               onLostPointerCapture={(event: PointerEvent<HTMLDivElement>) =>
-                release(`pointer:${event.pointerId}`)
+                releasePointer(event.pointerId)
               }
             />
             <ButtonIcon

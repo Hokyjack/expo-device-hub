@@ -354,6 +354,32 @@ test("losing pointer capture releases that pointer's hold", async () => {
   expect(presses).toEqual(["power:down", "power:up"]);
 });
 
+test("an uncaptured pointer's hold ends when it leaves or the area blurs", async () => {
+  const presses = await render(IPHONE, chrome());
+  const refuse = {
+    setPointerCapture() {
+      throw new Error("capture refused");
+    },
+  };
+  await pointer(zone("power").props.onPointerDown, { pointerId: 4, currentTarget: refuse });
+  await pointer(zone("power").props.onPointerLeave, { pointerId: 4 });
+  expect(presses).toEqual(["power:down", "power:up"]);
+  await pointer(zone("volume-up").props.onPointerDown, { pointerId: 5, currentTarget: refuse });
+  await act(async () => (zone("volume-up").props.onBlur as () => void)());
+  expect(presses).toEqual(["power:down", "power:up", "volumeUp:down", "volumeUp:up"]);
+});
+
+test("a held button whose area goes away is released", async () => {
+  const presses = await render(IPHONE, chrome());
+  await pointer(zone("power").props.onPointerDown);
+  const withoutPower = {
+    ...chrome(),
+    buttons: chrome().buttons.filter((entry) => entry.name !== "power"),
+  };
+  await act(async () => renderer!.update(frame(IPHONE, fakeClient(withoutPower, presses))));
+  expect(presses).toEqual(["power:down", "power:up"]);
+});
+
 test("no frame means no button areas", async () => {
   await render({ ...PIXEL, deviceFrame: null }, null, PIXEL_ASSETS);
   expect(host((props) => "data-hardware-button" in props)).toEqual([]);
