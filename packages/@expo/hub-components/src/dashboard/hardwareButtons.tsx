@@ -187,7 +187,8 @@ export function FrameButtonLayer({
 }) {
   // The held button and the release bound to the client that pressed it, so a device switch,
   // unmount, or lost window focus still sends its up to that client, and only once.
-  const held = useRef<{ key: string; release: () => void } | null>(null);
+  // `sources` are the pointer and activation keys holding it; the last one to let go releases it.
+  const held = useRef<{ key: string; sources: Set<string>; release: () => void } | null>(null);
   const releaseHeld = useCallback(() => {
     const current = held.current;
     held.current = null;
@@ -207,11 +208,16 @@ export function FrameButtonLayer({
       {pressable.map((entry) => {
         const edge = edgeOf(frame, entry);
         const { Icon, label } = iconFor(entry.button, platform)!;
-        const press = () => {
+        const press = (source: string) => {
+          if (held.current?.key === entry.key) {
+            held.current.sources.add(source);
+            return;
+          }
           releaseHeld();
           const sendUp = onPress;
           held.current = {
             key: entry.key,
+            sources: new Set([source]),
             release: () => {
               onActivity((current) =>
                 current.pressed === entry.key ? { ...current, pressed: null } : current,
@@ -222,7 +228,12 @@ export function FrameButtonLayer({
           onActivity((current) => ({ ...current, pressed: entry.key }));
           onPress(entry.button, "down");
         };
-        const release = () => {
+        const release = (source: string) => {
+          if (held.current?.key !== entry.key) return;
+          held.current.sources.delete(source);
+          if (!held.current.sources.size) releaseHeld();
+        };
+        const releaseAll = () => {
           if (held.current?.key === entry.key) releaseHeld();
         };
         const show = () => onActivity((current) => ({ ...current, hovered: entry.key }));
@@ -248,16 +259,16 @@ export function FrameButtonLayer({
               onPointerLeave={hide}
               onFocus={show}
               onBlur={() => {
-                release();
+                releaseAll();
                 hide();
               }}
               onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
                 if (!activationKey(event)) return;
                 event.preventDefault();
-                if (!event.repeat && held.current?.key !== entry.key) press();
+                if (!event.repeat) press(`key:${event.code || event.key}`);
               }}
               onKeyUp={(event: KeyboardEvent<HTMLDivElement>) => {
-                if (activationKey(event)) release();
+                if (activationKey(event)) release(`key:${event.code || event.key}`);
               }}
               onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
                 if (event.button !== 0 && event.pointerType === "mouse") return;
@@ -266,10 +277,14 @@ export function FrameButtonLayer({
                 try {
                   event.currentTarget.setPointerCapture(event.pointerId);
                 } catch {}
-                press();
+                press(`pointer:${event.pointerId}`);
               }}
-              onPointerUp={release}
-              onPointerCancel={release}
+              onPointerUp={(event: PointerEvent<HTMLDivElement>) =>
+                release(`pointer:${event.pointerId}`)
+              }
+              onPointerCancel={(event: PointerEvent<HTMLDivElement>) =>
+                release(`pointer:${event.pointerId}`)
+              }
             />
             <ButtonIcon
               id={entry.key}

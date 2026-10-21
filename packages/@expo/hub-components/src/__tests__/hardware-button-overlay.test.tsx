@@ -308,6 +308,27 @@ test("a button area works from the keyboard", async () => {
   expect(shownIcons()).toEqual([]);
 });
 
+test("a hold ends only when every key and pointer holding it lets go", async () => {
+  const presses = await render(IPHONE, chrome());
+  const area = () => zone("power");
+  const key = (handler: unknown, k: string, code: string) =>
+    act(async () =>
+      (handler as (event: object) => void)({ key: k, code, repeat: false, preventDefault() {} }),
+    );
+  await key(area().props.onKeyDown, "Enter", "Enter");
+  await key(area().props.onKeyDown, "Enter", "NumpadEnter");
+  await key(area().props.onKeyDown, " ", "Space");
+  await pointer(area().props.onPointerDown, { pointerId: 1 });
+  await pointer(area().props.onPointerDown, { pointerId: 2 });
+  await key(area().props.onKeyUp, "Enter", "Enter");
+  await key(area().props.onKeyUp, "Enter", "NumpadEnter");
+  await pointer(area().props.onPointerUp, { pointerId: 1 });
+  await key(area().props.onKeyUp, " ", "Space");
+  expect(presses).toEqual(["power:down"]);
+  await pointer(area().props.onPointerUp, { pointerId: 2 });
+  expect(presses).toEqual(["power:down", "power:up"]);
+});
+
 test("no frame means no button areas", async () => {
   await render({ ...PIXEL, deviceFrame: null }, null, PIXEL_ASSETS);
   expect(host((props) => "data-hardware-button" in props)).toEqual([]);
