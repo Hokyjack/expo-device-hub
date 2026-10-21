@@ -104,6 +104,7 @@ export function DeviceKitChrome({
         onWheel={interactive && button.name === "digital-crown" ? onCrownWheel : undefined}
         containerSize={artworkSize}
         rotation={rotation}
+        glyphMounted={hasGlyph}
         glyphShown={hasGlyph && hoverEdge === edge}
         onEdgeHover={hasGlyph ? (inside) => onEdgeHover(edge, inside) : undefined}
       />
@@ -245,6 +246,7 @@ function ChromeButton({
   onWheel,
   containerSize,
   rotation = 0,
+  glyphMounted = false,
   glyphShown = false,
   onEdgeHover,
 }: {
@@ -257,6 +259,8 @@ function ChromeButton({
   containerSize?: { width: number; height: number };
   /** Artwork rotation, undone on the icon so it stays upright. */
   rotation?: number;
+  /** The icon stays mounted while it may show, so it can fade and slide in. */
+  glyphMounted?: boolean;
   /** The pointer is near this button's edge, so its icon shows. */
   glyphShown?: boolean;
   onEdgeHover?: (inside: boolean) => void;
@@ -287,9 +291,9 @@ function ChromeButton({
     // Keyed on presence, not identity: the handler reads onWheelRef.current,
     // so a new closure each render must not tear down and re-add the listener
     // (the parent re-renders every frame during a resize/inertia drag).
-    // `glyphShown` attaches to the icon each time hover mounts it.
+    // `glyphMounted` attaches to the icon again when it returns after presentation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [!!onWheel, glyphShown]);
+  }, [!!onWheel, glyphMounted]);
   // A button is only pressable when it carries a HID code; decorative inputs
   // (rare) still render but don't intercept pointer events.
   const pressable = interactive && button.usagePage != null && button.usage != null;
@@ -346,7 +350,7 @@ function ChromeButton({
       }
     : {};
 
-  const glyph = pressable && glyphShown ? BUTTON_GLYPHS[button.name] : undefined;
+  const glyph = pressable && glyphMounted ? BUTTON_GLYPHS[button.name] : undefined;
 
   return (
     <>
@@ -357,6 +361,7 @@ function ChromeButton({
           button={button}
           glyph={glyph}
           active={hovered || pressed}
+          shown={glyphShown}
           rotation={rotation}
           handlers={handlers}
         />
@@ -422,6 +427,8 @@ const GLYPH_SIZE_PX = 16;
 /** How far an icon reaches past the chrome frame, so the page can keep that space clear. */
 export const GLYPH_REACH_PX = GLYPH_GAP_PX + GLYPH_SIZE_PX;
 const GLYPH_HIDE_DELAY_MS = 150;
+/** Device Hub's icons fade in while sliding this far out from the bezel. */
+const GLYPH_SLIDE_PX = 6;
 /** Extra hover room around the icons, outward and along the edge. */
 const GLYPH_ZONE_SLACK_PX = 12;
 
@@ -504,6 +511,7 @@ function ButtonGlyph({
   button,
   glyph,
   active,
+  shown,
   rotation,
   handlers,
   ref,
@@ -512,6 +520,7 @@ function ButtonGlyph({
   button: DeviceKitChromeButton;
   glyph: { icon: LucideIcon; label: string };
   active: boolean;
+  shown: boolean;
   rotation: number;
   handlers: Record<string, unknown>;
   ref?: Ref<HTMLDivElement>;
@@ -522,13 +531,34 @@ function ButtonGlyph({
   const outside = `calc(100% + ${GLYPH_GAP_PX}px)`;
   const alongY = pct(rect.y + rect.height / 2, frame.height);
   const alongX = pct(rect.x + rect.width / 2, frame.width);
-  const placements: Record<Edge, [CSSProperties, string]> = {
-    left: [{ right: outside, top: alongY }, "translateY(-50%)"],
-    right: [{ left: outside, top: alongY }, "translateY(-50%)"],
-    top: [{ bottom: outside, left: alongX }, "translateX(-50%)"],
-    bottom: [{ top: outside, left: alongX }, "translateX(-50%)"],
+  // Each entry: position, centering shift, and the hidden icon's offset toward the bezel.
+  const placements: Record<Edge, [CSSProperties, string, string]> = {
+    left: [
+      { right: outside, top: alongY },
+      "translateY(-50%)",
+      `translate(${GLYPH_SLIDE_PX}px, 0px)`,
+    ],
+    right: [
+      { left: outside, top: alongY },
+      "translateY(-50%)",
+      `translate(-${GLYPH_SLIDE_PX}px, 0px)`,
+    ],
+    top: [
+      { bottom: outside, left: alongX },
+      "translateX(-50%)",
+      `translate(0px, ${GLYPH_SLIDE_PX}px)`,
+    ],
+    bottom: [
+      { top: outside, left: alongX },
+      "translateX(-50%)",
+      `translate(0px, -${GLYPH_SLIDE_PX}px)`,
+    ],
   };
-  const [place, shift] = placements[buttonEdge(chrome, rect)];
+  const [place, shift, tuck] = placements[buttonEdge(chrome, rect)];
+  // The slide is in portrait artwork coordinates; the icon then turns upright.
+  const transform = [shift, shown ? "" : tuck, rotation ? `rotate(${-rotation}deg)` : ""]
+    .filter(Boolean)
+    .join(" ");
   const Icon = glyph.icon;
   return (
     <div
@@ -541,10 +571,12 @@ function ButtonGlyph({
         ...place,
         width: GLYPH_SIZE_PX,
         height: GLYPH_SIZE_PX,
-        transform: rotation ? `${shift} rotate(${-rotation}deg)` : shift,
-        transition: "color 0.12s ease",
+        transform,
+        opacity: shown ? 1 : 0,
+        transition: "color 0.12s ease, opacity 0.18s ease, transform 0.18s ease-out",
         cursor: "pointer",
-        pointerEvents: "auto",
+        // A hidden icon must not catch the pointer; its edge zone reveals it.
+        pointerEvents: shown ? "auto" : "none",
         touchAction: "none",
       }}
       {...handlers}

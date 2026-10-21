@@ -214,8 +214,10 @@ describe("hardware button glyphs", () => {
       .map((node) => node.props as Record<string, unknown> & { style: Record<string, unknown> });
   const glyph = (renderer: Renderer, name: string) =>
     glyphs(renderer).find((props) => props["data-devicekit-glyph"] === name);
+  // Hidden icons stay mounted so they can fade and slide in, like Device Hub's.
   const glyphNames = (renderer: Renderer) =>
     glyphs(renderer)
+      .filter((props) => props.style.opacity === 1)
       .map((props) => props["data-devicekit-glyph"])
       .sort();
   const zone = (renderer: Renderer, edge: string) =>
@@ -264,6 +266,21 @@ describe("hardware button glyphs", () => {
     expect(glyphNames(renderer)).toEqual(["power"]);
     await act(async () => Bun.sleep(250));
     expect(glyphNames(renderer)).toEqual([]);
+  });
+
+  test("slides a hidden icon toward the bezel and out of pointer reach", async () => {
+    const renderer = await render({
+      chrome: { ...chromeFixture(), buttons: [volumeUp, power, home] },
+      interactive: true,
+    });
+    expect(glyph(renderer, "power")!.style).toMatchObject({ opacity: 0, pointerEvents: "none" });
+    expect(String(glyph(renderer, "power")!.style.transform)).toContain("translate(-6px, 0px)");
+    expect(String(glyph(renderer, "volume-up")!.style.transform)).toContain("translate(6px, 0px)");
+    expect(String(glyph(renderer, "home")!.style.transform)).toContain("translate(0px, -6px)");
+    await pointer(zone(renderer, "right").onPointerEnter);
+    expect(glyph(renderer, "power")!.style).toMatchObject({ opacity: 1, pointerEvents: "auto" });
+    expect(String(glyph(renderer, "power")!.style.transform)).not.toContain("6px");
+    expect(String(glyph(renderer, "power")!.style.transition)).toContain("opacity");
   });
 
   test("places each icon a fixed gap outside the frame edge its button is on", async () => {
@@ -352,10 +369,9 @@ describe("hardware button glyphs", () => {
         },
       );
     });
-    expect([...wheel.keys()]).toEqual(["cap"]);
-    // The icon appears on hover and must turn the crown as soon as it does.
-    await pointer(zone(renderer, "right").onPointerEnter);
+    // The icon stays mounted, so it turns the crown as soon as hover reveals it.
     expect([...wheel.keys()].sort()).toEqual(["cap", "glyph"]);
+    await pointer(zone(renderer, "right").onPointerEnter);
     let prevented = 0;
     wheel.get("glyph")!({
       deltaY: 3,
@@ -365,6 +381,35 @@ describe("hardware button glyphs", () => {
     });
     expect(turns).toEqual([3]);
     expect(prevented).toBe(1);
+  });
+
+  test("the crown icon still turns the crown after presentation ends", async () => {
+    const chrome = {
+      ...chromeFixture(),
+      buttons: [button("digital-crown", { x: 986, y: 500, width: 14, height: 200 })],
+    };
+    const listening = new Set<string>();
+    const props = (showButtonGlyphs: boolean) => ({
+      chrome,
+      interactive: true,
+      showButtonGlyphs,
+      onCrownWheel: () => {},
+    });
+    let renderer!: Renderer;
+    await act(async () => {
+      renderer = create(createElement(DeviceKitChrome, props(false)), {
+        createNodeMock: (element) => {
+          const kind = "data-devicekit-glyph" in (element.props as object) ? "glyph" : "other";
+          return {
+            addEventListener: (type: string) => type === "wheel" && listening.add(kind),
+            removeEventListener: (type: string) => type === "wheel" && listening.delete(kind),
+          };
+        },
+      });
+    });
+    expect([...listening]).toEqual(["other"]);
+    await act(async () => renderer.update(createElement(DeviceKitChrome, props(true))));
+    expect([...listening].sort()).toEqual(["glyph", "other"]);
   });
 
   test("shows no icons or hover zones in full-screen presentation", async () => {
@@ -378,7 +423,7 @@ describe("hardware button glyphs", () => {
         (node) => typeof node.type === "string" && "data-devicekit-edge" in node.props,
       ),
     ).toEqual([]);
-    expect(glyphNames(renderer)).toEqual([]);
+    expect(glyphs(renderer)).toEqual([]);
   });
 
   test("shows no hover zone for placeholders, inputs without a HID code, or unknown names", () => {
