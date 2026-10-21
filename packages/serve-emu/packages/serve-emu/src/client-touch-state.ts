@@ -8,13 +8,6 @@ import type { Gesture } from "./input.ts";
 type Touch = Extract<Gesture, { type: "touch" }>;
 type Key = Extract<Gesture, { type: "key" }>;
 
-type HeldKey = {
-  target: TouchInputTarget;
-  gesture: Key;
-  record: boolean;
-  down: Promise<ControlInputCompletion>;
-};
-
 export type TouchInputTarget = {
   /** The input queue, not the longer-lived device or viewer. */
   identity: object;
@@ -23,9 +16,10 @@ export type TouchInputTarget = {
   enqueue(gesture: Gesture, source: string, record: boolean): ControlInputHandle;
 };
 
-type TouchCycle = {
+// A held key (a DOWN with its own UP, such as a hardware button) has the same lifecycle.
+type TouchCycle<G extends Touch | Key = Touch | Key> = {
   target: TouchInputTarget;
-  gesture: Touch;
+  gesture: G;
   record: boolean;
   down: Promise<ControlInputCompletion>;
   downRejected: boolean;
@@ -46,12 +40,13 @@ function allocatePointerId(target: object): number {
 export class ClientTouchState {
   readonly #target: () => TouchInputTarget;
   readonly #source: string;
-  readonly #touches = new Map<number, TouchCycle>();
+  readonly #touches = new Map<number, TouchCycle<Touch>>();
   // An admitted UP allows a new gesture with the same local ID. Keep the old
   // cycle until its release succeeds so a late rejection cannot lose ownership.
   readonly #unreleased = new Set<TouchCycle>();
-  // A key DOWN without its UP, for example a held hardware button.
-  readonly #heldKeys = new Map<number, HeldKey>();
+  readonly #keys = new Map<number, TouchCycle>();
+  // DOWNs of a held key not yet rejected; the hold ends only when all of them are rejected.
+  readonly #liveKeyDowns = new WeakMap<TouchCycle, number>();
   #current: TouchInputTarget | null = null;
   #closed = false;
   #closeTask: Promise<void> | null = null;
@@ -69,7 +64,7 @@ export class ClientTouchState {
       // Never redirect its old pointer releases to the new input queue.
       this.#touches.clear();
       this.#unreleased.clear();
-      this.#heldKeys.clear();
+      this.#keys.clear();
       this.#current = target;
     }
     if (gesture.type === "key") return this.#enqueueKey(target, gesture, record);
@@ -95,7 +90,7 @@ export class ClientTouchState {
           : previous!.gesture.pointerId,
     };
     const accepted = target.enqueue(mapped, this.#source, record);
-    const cycle: TouchCycle =
+    const cycle: TouchCycle<Touch> =
       gesture.action === "down"
         ? {
             target,
@@ -140,39 +135,56 @@ export class ClientTouchState {
 
   #enqueueKey(target: TouchInputTarget, gesture: Key, record: boolean): ControlInputHandle {
     const accepted = target.enqueue(gesture, this.#source, record);
-    if (gesture.action === "up") {
-      this.#heldKeys.delete(gesture.keycode);
-    } else if (gesture.action === "down") {
-      const held: HeldKey = { target, gesture, record, down: accepted.completion };
-      this.#heldKeys.set(gesture.keycode, held);
-      accepted.completion.catch((error: unknown) => {
-        if (
-          error instanceof ControlInputRejectedError &&
-          this.#heldKeys.get(gesture.keycode) === held
-        ) {
-          this.#heldKeys.delete(gesture.keycode);
-        }
-      });
-    }
-    return accepted;
-  }
-
-  #releaseKey(held: HeldKey): Promise<void> {
-    if (held.target.identity !== this.#target().identity) return Promise.resolve();
-    return held.target
-      .enqueue({ ...held.gesture, action: "up" }, `${this.#source}:disconnect`, held.record)
-      .completion.then(
-        () => {},
-        async (error: unknown) => {
-          try {
-            await held.down;
-          } catch (downError) {
-            // Nothing was pressed, so there is nothing to release.
-            if (downError instanceof ControlInputRejectedError) return;
+    if (!gesture.action) return accepted;
+    const keycode = gesture.keycode;
+    const previous = this.#keys.get(keycode);
+    const held = previous && !previous.up && !previous.downRejected;
+    if (gesture.action === "down") {
+      // A repeated DOWN of a held key joins the original cycle and its single release.
+      const cycle: TouchCycle = held
+        ? previous
+        : { target, gesture, record, down: accepted.completion, downRejected: false, up: null };
+      if (!held) {
+        this.#keys.set(keycode, cycle);
+        this.#unreleased.add(cycle);
+      }
+      this.#liveKeyDowns.set(cycle, (this.#liveKeyDowns.get(cycle) ?? 0) + 1);
+      const completion = accepted.completion.then(
+        (result) => result,
+        (error: unknown) => {
+          if (error instanceof ControlInputRejectedError) {
+            const live = (this.#liveKeyDowns.get(cycle) ?? 1) - 1;
+            this.#liveKeyDowns.set(cycle, live);
+            if (live === 0) {
+              cycle.downRejected = true;
+              this.#unreleased.delete(cycle);
+              if (this.#keys.get(keycode) === cycle) this.#keys.delete(keycode);
+            }
           }
           throw error;
         },
       );
+      // Close waits on the latest DOWN; a rejected one means nothing is left to release.
+      cycle.down = completion;
+      return { ...accepted, completion };
+    }
+    if (!held) return accepted;
+    const cycle = previous;
+    cycle.record ||= record;
+    // Keep the cycle until its UP succeeds, so close can retry a rejected UP.
+    const completion: Promise<ControlInputCompletion> = accepted.completion.then(
+      (result) => {
+        this.#unreleased.delete(cycle);
+        if (this.#keys.get(keycode) === cycle) this.#keys.delete(keycode);
+        return result;
+      },
+      (error: unknown) => {
+        if (error instanceof ControlInputRejectedError && cycle.up === completion) cycle.up = null;
+        throw error;
+      },
+    );
+    cycle.up = completion;
+    return { ...accepted, completion };
   }
 
   #queueRelease(cycle: TouchCycle): Promise<void> {
@@ -243,17 +255,10 @@ export class ClientTouchState {
           releases.push(Promise.reject(error));
         }
       }
-      for (const held of this.#heldKeys.values()) {
-        try {
-          releases.push(this.#releaseKey(held));
-        } catch (error) {
-          releases.push(Promise.reject(error));
-        }
-      }
     } finally {
       this.#touches.clear();
       this.#unreleased.clear();
-      this.#heldKeys.clear();
+      this.#keys.clear();
       this.#current = null;
     }
     // Try every release and wait for all of them, even if one fails first.

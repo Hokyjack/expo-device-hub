@@ -670,7 +670,9 @@ with `down`; an old `move` or `up` cannot continue it.
 A `key` sent with `action: "down"` and no matching `up` is released the same
 way, so a viewer that leaves while it holds a hardware button does not leave
 the button down. A `key` without `action` (down and up together) needs no
-release.
+release. Like a touch, a held key reserves queue capacity for its `up`, a
+rejected `down` cancels its queued `up`, and a rejected `up` stays eligible for
+disconnect cleanup.
 If a touch is admitted but later rejected without closing the input queue,
 its ownership and release capacity are reconciled. A rejected `down` permits
 a fresh gesture and cancels its dependent queued `move`/`up`. A rejected `up`

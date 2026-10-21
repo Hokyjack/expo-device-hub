@@ -503,7 +503,9 @@ A socket can hold a page/usage button: a `0x04` message with `phase: "down"`
 and no matching `up`, as a viewer sends while the pointer stays on a frame
 button. When that socket detaches, its input cleanup sends `up` for every
 button it still holds, after its ordered input and with its held keys and
-touches. A `press` and a released button need nothing. Without this, a viewer
+touches. A `press` and a released button need nothing. The hold is recorded in message
+order, because `0x04` messages run concurrently, and a checked `up` that is rejected
+restores it unless a newer `down` replaced it, so cleanup retries the release. Without this, a viewer
 that closed mid-hold left the button down in the guest [observed: `DeviceSession.queueInputCleanup`,
 `releaseHeldButtons`]. serve-emu releases a held `key` DOWN on socket close in
 the same way [observed: serve-emu `ClientTouchState.close`].

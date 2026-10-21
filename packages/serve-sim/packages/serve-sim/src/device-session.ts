@@ -1488,10 +1488,18 @@ export class DeviceSession {
         this.recordHidEvent(tag, event);
         if (m.page != null && m.usage != null) {
           const phase = (m.phase as "down" | "up" | "press") ?? "press";
-          this.trackHeldButton(ws, m.page, m.usage, phase);
-          await (checked === true
-            ? this.hid.buttonHidChecked(m.page, m.usage, phase)
-            : this.hid.buttonHid(m.page, m.usage, phase));
+          // Track in message order: 0x04 handlers overlap, so a later `down` must not be
+          // erased by an earlier `up` that finishes after it.
+          const restore = this.trackHeldButton(ws, m.page, m.usage, phase);
+          try {
+            await (checked === true
+              ? this.hid.buttonHidChecked(m.page, m.usage, phase)
+              : this.hid.buttonHid(m.page, m.usage, phase));
+          } catch (error) {
+            // A rejected checked release leaves the button held, so cleanup retries it.
+            restore();
+            throw error;
+          }
         } else {
           await (checked === true ? this.hid.buttonChecked(m.button) : this.hid.button(m.button));
         }
@@ -2398,15 +2406,22 @@ export class DeviceSession {
     }
   }
 
-  private trackHeldButton(ws: HidSocket, page: number, usage: number, phase: string): void {
+  /** Records a button's hold or release; the returned function undoes a failed release. */
+  private trackHeldButton(ws: HidSocket, page: number, usage: number, phase: string): () => void {
     const key = `${page}:${usage}`;
     let held = this.heldHidButtons.get(ws);
     if (phase === "down") {
       if (!held) this.heldHidButtons.set(ws, (held = new Map()));
       held.set(key, { page, usage });
-    } else {
-      held?.delete(key);
+      return () => {};
     }
+    const released = held?.get(key);
+    held?.delete(key);
+    return () => {
+      // Restore only if no newer `down` took its place and the socket is not cleaned up.
+      const current = this.heldHidButtons.get(ws);
+      if (released && current && !current.has(key)) current.set(key, released);
+    };
   }
 
   // @ref LLP 0004#hardware-buttons — a viewer that leaves mid-hold must not leave the button down.

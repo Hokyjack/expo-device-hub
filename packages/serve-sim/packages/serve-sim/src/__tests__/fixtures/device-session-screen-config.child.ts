@@ -1397,6 +1397,53 @@ describe("button input reporting", () => {
     ]);
   });
 
+  test("a failed checked release is retried when the socket closes", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const cli = await connect(url);
+    const hold = { button: "volume-up", page: 12, usage: 233, checked: true };
+    expect(await pressThenBarrier(cli, { ...hold, phase: "down" })).toEqual([0x91, 1]);
+    buttonError = new Error("sendCustomButton failed");
+    expect(await pressThenBarrier(cli, { ...hold, phase: "up" })).toEqual([0x91, 0]);
+    buttonError = undefined;
+    cli.terminate();
+    await waitUntil(() => buttonHidEvents.length === 3);
+    expect(buttonHidEvents).toEqual([
+      [12, 233, "down"],
+      [12, 233, "up"],
+      [12, 233, "up"],
+    ]);
+  });
+
+  test("a new hold during a slow release is still released on close", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const viewer = await connect(url);
+    const hold = { button: "volume-up", page: 12, usage: 233 };
+    expect(await pressThenBarrier(viewer, { ...hold, phase: "down" })).toEqual([0x91, 1]);
+    let release!: () => void;
+    buttonGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const send = (phase: string) =>
+      viewer.send(
+        Buffer.concat([Buffer.from([0x04]), Buffer.from(JSON.stringify({ ...hold, phase }))]),
+      );
+    send("up");
+    send("down");
+    await waitUntil(() => buttonHidEvents.length === 3);
+    release();
+    buttonGate = undefined;
+    expect(await pressThenBarrier(viewer, { button: "lock" })).toEqual([0x91, 1]);
+    viewer.terminate();
+    await waitUntil(() => buttonHidEvents.length === 4);
+    expect(buttonHidEvents).toEqual([
+      [12, 233, "down"],
+      [12, 233, "up"],
+      [12, 233, "down"],
+      [12, 233, "up"],
+    ]);
+  });
+
   test("the barrier waits for a checked button that is still being sent", async () => {
     const { url } = await start({ width: 1170, height: 2532 });
     let release!: () => void;
