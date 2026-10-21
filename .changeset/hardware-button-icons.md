@@ -2,4 +2,4 @@
 "@expo/serve-sim": patch
 ---
 
-The preview shows an icon next to each hardware button of the device frame, like Apple's Device Hub. Click the icon to press the button.
+Like Apple's Device Hub, the preview shows hardware button icons beside the device frame when you hover near the buttons. Click an icon to press its button.
