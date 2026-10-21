@@ -53,6 +53,7 @@ let buttonError: Error | undefined;
 let buttonGate: Promise<void> | undefined;
 const inputCalls: string[] = [];
 const keyEvents: { type: string; usage: number }[] = [];
+const buttonHidEvents: [number, number, string][] = [];
 const pasteWrites: string[] = [];
 const pastedTexts: string[] = [];
 let clipboardText = "";
@@ -128,8 +129,9 @@ const addon = {
       await buttonGate;
       if (buttonError) throw buttonError;
     }
-    async buttonHid() {
+    async buttonHid(page: number, usage: number, phase: string) {
       inputCalls.push("buttonHid");
+      buttonHidEvents.push([page, usage, phase]);
       await buttonGate;
       if (buttonError) throw buttonError;
     }
@@ -411,6 +413,7 @@ beforeEach(() => {
   buttonGate = undefined;
   inputCalls.length = 0;
   keyEvents.length = 0;
+  buttonHidEvents.length = 0;
   pasteWrites.length = 0;
   pastedTexts.length = 0;
   clipboardText = "";
@@ -1367,6 +1370,32 @@ describe("button input reporting", () => {
       }
     },
   );
+
+  test("a closed socket releases the buttons it still holds", async () => {
+    const { url } = await start({ width: 1170, height: 2532 });
+    const viewer = await connect(url);
+    const hold = { button: "volume-up", page: 12, usage: 233 };
+    expect(await pressThenBarrier(viewer, { ...hold, phase: "down" })).toEqual([0x91, 1]);
+    expect(
+      await pressThenBarrier(viewer, { button: "lock", page: 12, usage: 48, phase: "down" }),
+    ).toEqual([0x91, 1]);
+    expect(
+      await pressThenBarrier(viewer, { button: "lock", page: 12, usage: 48, phase: "up" }),
+    ).toEqual([0x91, 1]);
+    expect(
+      await pressThenBarrier(viewer, { button: "action", page: 11, usage: 45, phase: "press" }),
+    ).toEqual([0x91, 1]);
+    viewer.terminate();
+    await waitUntil(() => buttonHidEvents.length === 5);
+    await Bun.sleep(20);
+    expect(buttonHidEvents).toEqual([
+      [12, 233, "down"],
+      [12, 48, "down"],
+      [12, 48, "up"],
+      [11, 45, "press"],
+      [12, 233, "up"],
+    ]);
+  });
 
   test("the barrier waits for a checked button that is still being sent", async () => {
     const { url } = await start({ width: 1170, height: 2532 });

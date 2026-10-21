@@ -6,6 +6,14 @@ import {
 import type { Gesture } from "./input.ts";
 
 type Touch = Extract<Gesture, { type: "touch" }>;
+type Key = Extract<Gesture, { type: "key" }>;
+
+type HeldKey = {
+  target: TouchInputTarget;
+  gesture: Key;
+  record: boolean;
+  down: Promise<ControlInputCompletion>;
+};
 
 export type TouchInputTarget = {
   /** The input queue, not the longer-lived device or viewer. */
@@ -42,6 +50,8 @@ export class ClientTouchState {
   // An admitted UP allows a new gesture with the same local ID. Keep the old
   // cycle until its release succeeds so a late rejection cannot lose ownership.
   readonly #unreleased = new Set<TouchCycle>();
+  // A key DOWN without its UP, for example a held hardware button.
+  readonly #heldKeys = new Map<number, HeldKey>();
   #current: TouchInputTarget | null = null;
   #closed = false;
   #closeTask: Promise<void> | null = null;
@@ -59,8 +69,10 @@ export class ClientTouchState {
       // Never redirect its old pointer releases to the new input queue.
       this.#touches.clear();
       this.#unreleased.clear();
+      this.#heldKeys.clear();
       this.#current = target;
     }
+    if (gesture.type === "key") return this.#enqueueKey(target, gesture, record);
     if (gesture.type !== "touch") return target.enqueue(gesture, this.#source, record);
 
     const localId = gesture.pointerId ?? 0;
@@ -124,6 +136,43 @@ export class ClientTouchState {
     if (gesture.action === "down") cycle.down = completion;
     else if (gesture.action === "up") cycle.up = completion;
     return { ...accepted, completion };
+  }
+
+  #enqueueKey(target: TouchInputTarget, gesture: Key, record: boolean): ControlInputHandle {
+    const accepted = target.enqueue(gesture, this.#source, record);
+    if (gesture.action === "up") {
+      this.#heldKeys.delete(gesture.keycode);
+    } else if (gesture.action === "down") {
+      const held: HeldKey = { target, gesture, record, down: accepted.completion };
+      this.#heldKeys.set(gesture.keycode, held);
+      accepted.completion.catch((error: unknown) => {
+        if (
+          error instanceof ControlInputRejectedError &&
+          this.#heldKeys.get(gesture.keycode) === held
+        ) {
+          this.#heldKeys.delete(gesture.keycode);
+        }
+      });
+    }
+    return accepted;
+  }
+
+  #releaseKey(held: HeldKey): Promise<void> {
+    if (held.target.identity !== this.#target().identity) return Promise.resolve();
+    return held.target
+      .enqueue({ ...held.gesture, action: "up" }, `${this.#source}:disconnect`, held.record)
+      .completion.then(
+        () => {},
+        async (error: unknown) => {
+          try {
+            await held.down;
+          } catch (downError) {
+            // Nothing was pressed, so there is nothing to release.
+            if (downError instanceof ControlInputRejectedError) return;
+          }
+          throw error;
+        },
+      );
   }
 
   #queueRelease(cycle: TouchCycle): Promise<void> {
@@ -194,9 +243,17 @@ export class ClientTouchState {
           releases.push(Promise.reject(error));
         }
       }
+      for (const held of this.#heldKeys.values()) {
+        try {
+          releases.push(this.#releaseKey(held));
+        } catch (error) {
+          releases.push(Promise.reject(error));
+        }
+      }
     } finally {
       this.#touches.clear();
       this.#unreleased.clear();
+      this.#heldKeys.clear();
       this.#current = null;
     }
     // Try every release and wait for all of them, even if one fails first.

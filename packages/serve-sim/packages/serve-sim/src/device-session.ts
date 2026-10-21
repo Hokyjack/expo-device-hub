@@ -369,6 +369,11 @@ export class DeviceSession {
   private readonly activeTouches = new WeakMap<HidSocket, () => Promise<void>>();
   private readonly activeMultiTouches = new WeakMap<HidSocket, () => Promise<void>>();
   private readonly activeHidKeyUsages = new WeakMap<HidSocket, Set<number>>();
+  // Buttons a socket pressed down and did not release, keyed "page:usage".
+  private readonly heldHidButtons = new WeakMap<
+    HidSocket,
+    Map<string, { page: number; usage: number }>
+  >();
   private readonly activeHidKeyUsageCounts = new Map<number, number>();
   private readonly axHandledKeyUsages = new WeakMap<HidSocket, Set<number>>();
   private readonly failedInputSockets = new WeakSet<HidSocket>();
@@ -1483,6 +1488,7 @@ export class DeviceSession {
         this.recordHidEvent(tag, event);
         if (m.page != null && m.usage != null) {
           const phase = (m.phase as "down" | "up" | "press") ?? "press";
+          this.trackHeldButton(ws, m.page, m.usage, phase);
           await (checked === true
             ? this.hid.buttonHidChecked(m.page, m.usage, phase)
             : this.hid.buttonHid(m.page, m.usage, phase));
@@ -2371,6 +2377,7 @@ export class DeviceSession {
           await release?.().catch(() => {});
         }
         await this.releaseHidKeys(ws, ws === this.serverInput);
+        await this.releaseHeldButtons(ws);
         this.axHandledKeyUsages.get(ws)?.clear();
         if (!this.hidSockets.has(ws) && (this.inFlightOrderedMessages.get(ws) ?? 0) === 0) {
           this.admittedHidSockets.delete(ws);
@@ -2388,6 +2395,27 @@ export class DeviceSession {
   private async releaseHidKeys(ws: HidSocket, checked = false): Promise<void> {
     for (const usage of this.activeHidKeyUsages.get(ws) ?? []) {
       await this.updateHidKey(ws, "up", usage, checked).catch(() => {});
+    }
+  }
+
+  private trackHeldButton(ws: HidSocket, page: number, usage: number, phase: string): void {
+    const key = `${page}:${usage}`;
+    let held = this.heldHidButtons.get(ws);
+    if (phase === "down") {
+      if (!held) this.heldHidButtons.set(ws, (held = new Map()));
+      held.set(key, { page, usage });
+    } else {
+      held?.delete(key);
+    }
+  }
+
+  // @ref LLP 0004#hardware-buttons — a viewer that leaves mid-hold must not leave the button down.
+  private async releaseHeldButtons(ws: HidSocket): Promise<void> {
+    const held = this.heldHidButtons.get(ws);
+    if (!held) return;
+    this.heldHidButtons.delete(ws);
+    for (const { page, usage } of held.values()) {
+      await this.hid.buttonHid(page, usage, "up");
     }
   }
 
