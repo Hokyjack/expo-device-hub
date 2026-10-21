@@ -7,6 +7,17 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import {
+  BellOff,
+  CircleDot,
+  House,
+  Lock,
+  Power,
+  RotateCw,
+  Volume1,
+  Volume2,
+  type LucideIcon,
+} from "lucide-react";
 import type { DeviceKitChromeButton, DeviceKitChromeDescriptor, GridRect } from "../utils/grid";
 import type { SimulatorOrientation } from "../types";
 import { rotationDegreesForOrientation } from "../simulator/orientation";
@@ -73,6 +84,7 @@ export function DeviceKitChrome({
       onButton={onButton}
       onWheel={interactive && button.name === "digital-crown" ? onCrownWheel : undefined}
       containerSize={artworkSize}
+      rotation={rotation}
     />
   );
 
@@ -201,6 +213,7 @@ function ChromeButton({
   onButton,
   onWheel,
   containerSize,
+  rotation = 0,
 }: {
   chrome: DeviceKitChromeDescriptor;
   button: DeviceKitChromeButton;
@@ -209,6 +222,8 @@ function ChromeButton({
   /** Wheel over this cap (the Digital Crown) → (deltaY, deltaMode). */
   onWheel?: (deltaY: number, deltaMode: number) => void;
   containerSize?: { width: number; height: number };
+  /** Artwork rotation, undone on the icon so it stays upright. */
+  rotation?: number;
 }) {
   const [hovered, setHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
@@ -286,43 +301,156 @@ function ChromeButton({
       }
     : {};
 
+  const glyph = pressable ? BUTTON_GLYPHS[button.name] : undefined;
+
+  return (
+    <>
+      {glyph && (
+        <ButtonGlyph
+          chrome={chrome}
+          button={button}
+          glyph={glyph}
+          active={hovered || pressed}
+          rotation={rotation}
+          handlers={handlers}
+        />
+      )}
+      <div
+        ref={elRef}
+        role={pressable ? "button" : undefined}
+        aria-label={pressable ? buttonLabel(button.name) : undefined}
+        aria-hidden={pressable ? undefined : true}
+        title={pressable ? buttonLabel(button.name) : undefined}
+        className="absolute select-none"
+        style={{
+          ...rectStyle(chrome, button.frame, zIndex, containerSize),
+          transform: tx || ty ? `translate(${tx}%, ${ty}%)` : undefined,
+          transition: "transform 0.12s ease",
+          cursor: pressable ? "pointer" : undefined,
+          pointerEvents: pressable ? "auto" : "none",
+          touchAction: "none",
+        }}
+        {...handlers}
+      >
+        {sprite && (
+          <img
+            alt=""
+            aria-hidden
+            draggable={false}
+            src={chromeAssetUrl(chrome.identifier, sprite)}
+            className="absolute inset-0 size-full select-none"
+            style={
+              {
+                objectFit: "fill",
+                // Without a dedicated pressed sprite, brighten so the press still
+                // reads (no low-opacity dimming, per house style).
+                filter: pressed && !button.imageDown ? "brightness(1.4)" : undefined,
+                transition: "filter 0.12s ease",
+                WebkitUserDrag: "none",
+              } as CSSProperties
+            }
+          />
+        )}
+      </div>
+    </>
+  );
+}
+
+// Like Apple's Device Hub, each hardware button gets an icon just outside the bezel. Device Hub
+// draws SF Symbols, which may not ship in a web page, so these are Lucide (ISC) equivalents.
+const BUTTON_GLYPHS: Record<string, { icon: LucideIcon; label: string }> = {
+  power: { icon: Lock, label: "Lock" },
+  "volume-up": { icon: Volume2, label: "Volume Up" },
+  "volume-down": { icon: Volume1, label: "Volume Down" },
+  action: { icon: CircleDot, label: "Action" },
+  mute: { icon: BellOff, label: "Ring/Silent" },
+  home: { icon: House, label: "Home" },
+  "digital-crown": { icon: RotateCw, label: "Digital Crown" },
+  "side-button": { icon: Power, label: "Side Button" },
+  "left-side-button": { icon: CircleDot, label: "Action" },
+};
+
+/** Gap between a button's outer edge and its icon, in CSS pixels at every zoom level. */
+const GLYPH_GAP_PX = 10;
+const GLYPH_SIZE_PX = 16;
+/** How far an icon reaches past the chrome frame, so the page can keep that space clear. */
+export const GLYPH_REACH_PX = GLYPH_GAP_PX + GLYPH_SIZE_PX;
+
+type Edge = "top" | "right" | "bottom" | "left";
+const CLOCKWISE: Edge[] = ["top", "right", "bottom", "left"];
+
+/** The bezel edge a button pokes past, in portrait artwork coordinates. */
+function buttonEdge(chrome: DeviceKitChromeDescriptor, rect: GridRect): Edge {
+  const { body } = chrome;
+  if (rect.x < body.x) return "left";
+  if (rect.x + rect.width > body.x + body.width) return "right";
+  if (rect.y < body.y) return "top";
+  return "bottom";
+}
+
+/** Edges of the oriented device that carry a button icon. */
+export function deviceKitGlyphEdges(
+  chrome: DeviceKitChromeDescriptor,
+  orientation: SimulatorOrientation = "portrait",
+): Set<Edge> {
+  const turns = Math.round(rotationDegreesForOrientation(orientation) / 90);
+  const edges = new Set<Edge>();
+  for (const button of chrome.buttons) {
+    if (button.usagePage == null || button.usage == null || !BUTTON_GLYPHS[button.name]) continue;
+    const index = CLOCKWISE.indexOf(buttonEdge(chrome, button.frame));
+    edges.add(CLOCKWISE[(((index + turns) % 4) + 4) % 4]!);
+  }
+  return edges;
+}
+
+function ButtonGlyph({
+  chrome,
+  button,
+  glyph,
+  active,
+  rotation,
+  handlers,
+}: {
+  chrome: DeviceKitChromeDescriptor;
+  button: DeviceKitChromeButton;
+  glyph: { icon: LucideIcon; label: string };
+  active: boolean;
+  rotation: number;
+  handlers: Record<string, unknown>;
+}) {
+  const { frame } = chrome;
+  const rect = button.frame;
+  // Outside the frame edge the button sits on, so face buttons such as Home clear the bezel too.
+  const outside = `calc(100% + ${GLYPH_GAP_PX}px)`;
+  const alongY = pct(rect.y + rect.height / 2, frame.height);
+  const alongX = pct(rect.x + rect.width / 2, frame.width);
+  const placements: Record<Edge, [CSSProperties, string]> = {
+    left: [{ right: outside, top: alongY }, "translateY(-50%)"],
+    right: [{ left: outside, top: alongY }, "translateY(-50%)"],
+    top: [{ bottom: outside, left: alongX }, "translateX(-50%)"],
+    bottom: [{ top: outside, left: alongX }, "translateX(-50%)"],
+  };
+  const [place, shift] = placements[buttonEdge(chrome, rect)];
+  const Icon = glyph.icon;
   return (
     <div
-      ref={elRef}
-      role={pressable ? "button" : undefined}
-      aria-label={pressable ? buttonLabel(button.name) : undefined}
-      aria-hidden={pressable ? undefined : true}
-      title={pressable ? buttonLabel(button.name) : undefined}
-      className="absolute select-none"
+      data-devicekit-glyph={button.name}
+      aria-hidden
+      title={glyph.label}
+      className={`absolute flex select-none items-center justify-center ${active ? "text-accent" : "text-zinc-500"}`}
       style={{
-        ...rectStyle(chrome, button.frame, zIndex, containerSize),
-        transform: tx || ty ? `translate(${tx}%, ${ty}%)` : undefined,
-        transition: "transform 0.12s ease",
-        cursor: pressable ? "pointer" : undefined,
-        pointerEvents: pressable ? "auto" : "none",
+        ...place,
+        width: GLYPH_SIZE_PX,
+        height: GLYPH_SIZE_PX,
+        transform: rotation ? `${shift} rotate(${-rotation}deg)` : shift,
+        transition: "color 0.12s ease",
+        cursor: "pointer",
+        pointerEvents: "auto",
         touchAction: "none",
       }}
       {...handlers}
     >
-      {sprite && (
-        <img
-          alt=""
-          aria-hidden
-          draggable={false}
-          src={chromeAssetUrl(chrome.identifier, sprite)}
-          className="absolute inset-0 size-full select-none"
-          style={
-            {
-              objectFit: "fill",
-              // Without a dedicated pressed sprite, brighten so the press still
-              // reads (no low-opacity dimming, per house style).
-              filter: pressed && !button.imageDown ? "brightness(1.4)" : undefined,
-              transition: "filter 0.12s ease",
-              WebkitUserDrag: "none",
-            } as CSSProperties
-          }
-        />
-      )}
+      <Icon size={GLYPH_SIZE_PX} strokeWidth={1.75} />
     </div>
   );
 }

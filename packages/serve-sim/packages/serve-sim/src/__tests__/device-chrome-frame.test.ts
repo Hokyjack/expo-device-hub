@@ -5,6 +5,7 @@ import {
   DeviceKitChrome,
   deviceKitChromeForScreen,
   deviceKitChromeGeometry,
+  deviceKitGlyphEdges,
   deviceKitScreenRadius,
   snapChromeRect,
 } from "../client/components/device-chrome-frame";
@@ -171,6 +172,105 @@ describe("oriented DeviceKitChrome", () => {
     expect(markup).toContain("left:4%;top:4%;width:30%;height:35%");
     expect(markup).not.toContain("rotate(");
     expect(markup).not.toContain('role="button"');
+  });
+});
+
+describe("hardware button glyphs", () => {
+  // Body spans x 10..990 and y 20..1980 in a 1000x2000 frame.
+  const button = (
+    name: string,
+    frame: { x: number; y: number; width: number; height: number },
+    usage: number | null = 1,
+  ): DeviceKitChromeDescriptor["buttons"][number] => ({
+    name,
+    image: name,
+    imageDown: null,
+    onTop: false,
+    frame,
+    hover: { x: 0, y: 0 },
+    usagePage: usage === null ? null : 12,
+    usage,
+  });
+  const glyphStyle = (markup: string, name: string) =>
+    markup.match(new RegExp(`<div[^>]*data-devicekit-glyph="${name}"[^>]*style="([^"]+)"`))?.[1];
+
+  test("places an icon outside the bezel beside each pressable button", () => {
+    const chrome = {
+      ...chromeFixture(),
+      buttons: [
+        button("volume-up", { x: 0, y: 400, width: 14, height: 100 }),
+        button("power", { x: 986, y: 500, width: 14, height: 200 }),
+        // A face button inside the bezel, like iPhone SE's Home button.
+        button("home", { x: 450, y: 1850, width: 100, height: 100 }),
+      ],
+    };
+    const markup = renderToStaticMarkup(
+      createElement(DeviceKitChrome, { chrome, interactive: true }),
+    );
+    // Each icon sits a fixed gap outside the frame edge its button is on.
+    expect(glyphStyle(markup, "volume-up")).toContain("right:calc(100% + 10px)");
+    expect(glyphStyle(markup, "volume-up")).toContain("top:22.5%");
+    expect(glyphStyle(markup, "power")).toContain("left:calc(100% + 10px)");
+    expect(glyphStyle(markup, "power")).toContain("top:30%");
+    expect(glyphStyle(markup, "home")).toContain("top:calc(100% + 10px)");
+    expect(glyphStyle(markup, "home")).toContain("left:50%");
+    // The bezel button carries the accessible name; the icon only repeats it visually.
+    expect(markup).toMatch(/data-devicekit-glyph="power"[^>]*aria-hidden="true"[^>]*title="Lock"/);
+    expect(markup).toMatch(/data-devicekit-glyph="volume-up"[^>]*title="Volume Up"/);
+  });
+
+  test("keeps icons upright while the artwork rotates", () => {
+    const chrome = {
+      ...chromeFixture(),
+      buttons: [button("power", { x: 986, y: 500, width: 14, height: 200 })],
+    };
+    const markup = renderToStaticMarkup(
+      createElement(DeviceKitChrome, { chrome, interactive: true, orientation: "landscape_left" }),
+    );
+    expect(glyphStyle(markup, "power")).toContain("rotate(-90deg)");
+  });
+
+  test("reports the edges that carry icons in the current orientation", () => {
+    const chrome = {
+      ...chromeFixture(),
+      buttons: [
+        button("volume-up", { x: 0, y: 400, width: 14, height: 100 }),
+        button("power", { x: 986, y: 500, width: 14, height: 200 }),
+        button("mystery", { x: 450, y: 1970, width: 100, height: 30 }),
+      ],
+    };
+    const edges = (orientation: SimulatorOrientation) =>
+      [...deviceKitGlyphEdges(chrome, orientation)].sort();
+    expect(edges("portrait")).toEqual(["left", "right"]);
+    // Artwork rotates 90° clockwise for landscape_left: left goes to the top.
+    expect(edges("landscape_left")).toEqual(["bottom", "top"]);
+    expect(edges("portrait_upside_down")).toEqual(["left", "right"]);
+    expect([
+      ...deviceKitGlyphEdges(
+        { ...chrome, buttons: [button("home", { x: 450, y: 1970, width: 100, height: 30 })] },
+        "landscape_right",
+      ),
+    ]).toEqual(["right"]);
+  });
+
+  test("shows no icon for placeholders, inputs without a HID code, or unknown names", () => {
+    const chrome = {
+      ...chromeFixture(),
+      buttons: [
+        button("power", { x: 986, y: 500, width: 14, height: 200 }, null),
+        button("mystery", { x: 986, y: 800, width: 14, height: 200 }),
+      ],
+    };
+    expect(
+      renderToStaticMarkup(createElement(DeviceKitChrome, { chrome, interactive: true })),
+    ).not.toContain("data-devicekit-glyph");
+    expect(
+      renderToStaticMarkup(
+        createElement(DeviceKitChrome, {
+          chrome: { ...chrome, buttons: [button("power", chrome.buttons[0]!.frame)] },
+        }),
+      ),
+    ).not.toContain("data-devicekit-glyph");
   });
 });
 
