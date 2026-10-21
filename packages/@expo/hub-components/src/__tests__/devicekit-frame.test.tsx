@@ -194,6 +194,34 @@ test("nine-slice pieces overlap by a hair, so no seam shows between them", () =>
   expect(markup).toMatch(/src="\/chrome\?image=X_Power%20BTN"[^>]*style="[^"]*left:98\.6000%/);
 });
 
+test("a multi-display device draws the chrome of the active display", () => {
+  const inner = chrome({
+    identifier: "phone15-inner",
+    frame: { width: 2000, height: 2000 },
+    screen: { x: 100, y: 100, width: 1800, height: 1800 },
+  });
+  const duo = chrome({ identifier: "phone15", screenId: 1, displayVariants: { 3: inner } });
+  const client = (screenId: number | undefined) =>
+    ({
+      status: "streaming",
+      inputError: null,
+      screen: { width: 1000, height: 1000, screenId },
+      deviceChrome: duo,
+    }) as unknown as DeviceClient;
+  const kind = (screenId: number | undefined) =>
+    renderToStaticMarkup(
+      <PhoneFrame
+        device={IPHONE}
+        client={client(screenId)}
+        DeviceScreen={() => null}
+        displayScreen={(screen) => screen ?? null}
+      />,
+    ).match(/data-device-frame-kind="([^"]+)"/)?.[1];
+  expect(kind(3)).toBe("devicekit:phone15-inner");
+  expect(kind(1)).toBe("devicekit:phone15");
+  expect(kind(undefined)).toBe("devicekit:phone15");
+});
+
 test("hiding the frame or a missing chrome keeps today's behavior", () => {
   expect(render(chrome(), { showDeviceFrame: false })).toContain('data-device-frame-kind="none"');
   // Without chrome, the bundled iPhone 17 Pro PNG still frames the device.

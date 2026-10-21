@@ -2,6 +2,7 @@ import { type ComponentType, type CSSProperties, useState } from "react";
 
 import {
   type AgentInteraction,
+  deviceChromeForScreen,
   type DeviceClient,
   type DeviceScreenProps,
   type ScreenSize,
@@ -128,7 +129,11 @@ export function PhoneFrame({
 
   // Apple's DeviceKit chrome, when serve-sim has one, frames every iOS model it knows; the
   // bundled artwork remains the frame for the models it covers otherwise.
-  const deviceChrome = showDeviceFrame ? (client?.deviceChrome ?? null) : null;
+  // A multi-display device (iPhone Duo) is framed by the chrome of the display that streams.
+  const deviceChrome =
+    showDeviceFrame && client?.deviceChrome
+      ? deviceChromeForScreen(client.deviceChrome, client.screen?.screenId)
+      : null;
   const kitFramed = deviceChrome
     ? deviceKitFramePresentation({
         chrome: deviceChrome,
