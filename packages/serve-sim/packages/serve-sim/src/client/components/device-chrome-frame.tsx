@@ -338,6 +338,8 @@ function ChromeButton({
     : {};
 
   const glyph = pressable && glyphMounted ? BUTTON_GLYPHS[button.name] : undefined;
+  // With an icon area, that area covers the cap and is the only hit target.
+  const capTakesPointer = pressable && !glyph;
 
   return (
     <>
@@ -364,33 +366,42 @@ function ChromeButton({
         className="absolute select-none"
         style={{
           ...rectStyle(chrome, button.frame, zIndex, containerSize),
-          transform: tx || ty ? `translate(${tx}%, ${ty}%)` : undefined,
-          transition: `transform ${BUTTON_TRANSITION}`,
-          cursor: pressable ? "pointer" : undefined,
-          pointerEvents: pressable ? "auto" : "none",
+          cursor: capTakesPointer ? "pointer" : undefined,
+          pointerEvents: capTakesPointer ? "auto" : "none",
           touchAction: "none",
         }}
-        {...handlers}
+        {...(capTakesPointer ? handlers : {})}
       >
-        {sprite && (
-          <img
-            alt=""
-            aria-hidden
-            draggable={false}
-            src={chromeAssetUrl(chrome.identifier, sprite)}
-            className="absolute inset-0 size-full select-none"
-            style={
-              {
-                objectFit: "fill",
-                // Without a dedicated pressed sprite, brighten so the press still
-                // reads (no low-opacity dimming, per house style).
-                filter: pressed && !button.imageDown ? "brightness(1.4)" : undefined,
-                transition: "filter 0.12s ease",
-                WebkitUserDrag: "none",
-              } as CSSProperties
-            }
-          />
-        )}
+        {/* Only the sprite slides out. The hit area stays put; if it moved with the
+            sprite, a pointer near the edge would leave and re-enter it in a loop. */}
+        <div
+          data-devicekit-cap-sprite=""
+          className="absolute inset-0"
+          style={{
+            transform: tx || ty ? `translate(${tx}%, ${ty}%)` : undefined,
+            transition: `transform ${BUTTON_TRANSITION}`,
+          }}
+        >
+          {sprite && (
+            <img
+              alt=""
+              aria-hidden
+              draggable={false}
+              src={chromeAssetUrl(chrome.identifier, sprite)}
+              className="absolute inset-0 size-full select-none"
+              style={
+                {
+                  objectFit: "fill",
+                  // Without a dedicated pressed sprite, brighten so the press still
+                  // reads (no low-opacity dimming, per house style).
+                  filter: pressed && !button.imageDown ? "brightness(1.4)" : undefined,
+                  transition: "filter 0.12s ease",
+                  WebkitUserDrag: "none",
+                } as CSSProperties
+              }
+            />
+          )}
+        </div>
       </div>
     </>
   );
@@ -453,7 +464,7 @@ export function deviceKitGlyphEdges(
   return edges;
 }
 
-/** Invisible area from the frame edge out past the icon; it acts as the button itself. */
+/** Invisible area over the cap and out past the icon; it is the button's only hit target. */
 function ButtonZone({
   chrome,
   button,
@@ -476,12 +487,25 @@ function ButtonZone({
     [vertical ? "top" : "left"]: `calc(${pct(start, total)} - ${GLYPH_ZONE_SLACK_PX}px)`,
     [vertical ? "height" : "width"]: `calc(${pct(length, total)} + ${2 * GLYPH_ZONE_SLACK_PX}px)`,
   };
+  // From the cap's inner edge out past the icon, so the cap is inside the area.
   const outward = GLYPH_REACH_PX + GLYPH_ZONE_SLACK_PX;
   const across: CSSProperties = {
-    left: { right: "100%", width: outward },
-    right: { left: "100%", width: outward },
-    top: { bottom: "100%", height: outward },
-    bottom: { top: "100%", height: outward },
+    left: {
+      right: pct(frame.width - rect.x - rect.width, frame.width),
+      width: `calc(${pct(rect.x + rect.width, frame.width)} + ${outward}px)`,
+    },
+    right: {
+      left: pct(rect.x, frame.width),
+      width: `calc(${pct(frame.width - rect.x, frame.width)} + ${outward}px)`,
+    },
+    top: {
+      bottom: pct(frame.height - rect.y - rect.height, frame.height),
+      height: `calc(${pct(rect.y + rect.height, frame.height)} + ${outward}px)`,
+    },
+    bottom: {
+      top: pct(rect.y, frame.height),
+      height: `calc(${pct(frame.height - rect.y, frame.height)} + ${outward}px)`,
+    },
   }[edge];
   return (
     <div

@@ -258,12 +258,12 @@ describe("hardware button glyphs", () => {
     expect(glyphNames(renderer)).toEqual(["volume-up"]);
   });
 
-  test("hovering a bezel button shows its edge and highlights only that icon", async () => {
+  test("hovering a button's area shows its edge and highlights only that icon", async () => {
     const renderer = await render({
       chrome: { ...chromeFixture(), buttons: [volumeUp, power, action] },
       interactive: true,
     });
-    await pointer((cap(renderer, "Power").props as Handlers).onPointerEnter);
+    await pointer(zone(renderer, "power").onPointerEnter);
     expect(glyphNames(renderer)).toEqual(["action", "power"]);
     expect(glyph(renderer, "power")!.className).toContain("text-accent");
     expect(glyph(renderer, "action")!.className).not.toContain("text-accent");
@@ -277,20 +277,25 @@ describe("hardware button glyphs", () => {
       interactive: true,
       onButton: ({ phase, button }) => presses.push(`${button.name}:${phase}`),
     });
-    const capTransform = () => cap(renderer, "Power").props.style.transform;
+    // Only the sprite slides; the hit area stays put, or a pointer at the edge would flicker.
+    const sprite = () =>
+      cap(renderer, "Power").find(
+        (node) => typeof node.type === "string" && "data-devicekit-cap-sprite" in node.props,
+      );
+    const capTransform = () => sprite().props.style.transform;
     expect(capTransform()).toBeUndefined();
     await pointer(zone(renderer, "power").onPointerEnter);
     expect(capTransform()).toBe("translate(30%, 0%)");
+    expect(cap(renderer, "Power").props.style.transform).toBeUndefined();
     expect(glyph(renderer, "power")!.className).toContain("text-accent");
-    // Crossing from the area onto the cap keeps the cap out.
-    await pointer(() => {
-      zone(renderer, "power").onPointerLeave();
-      (cap(renderer, "Power").props as Handlers).onPointerEnter();
+    // The area covers the cap too, so the pointer never crosses between two hit targets.
+    expect(cap(renderer, "Power").props.style.pointerEvents).toBe("none");
+    expect(cap(renderer, "Power").props.onPointerEnter).toBeUndefined();
+    expect(zone(renderer, "power")).toMatchObject({
+      style: expect.objectContaining({ left: "98.6%" }),
     });
-    expect(capTransform()).toBe("translate(30%, 0%)");
-    expect(glyphNames(renderer)).toEqual(["power"]);
     // The cap and the icon go back together, with no extra delay.
-    await pointer((cap(renderer, "Power").props as Handlers).onPointerLeave);
+    await pointer(zone(renderer, "power").onPointerLeave);
     expect(capTransform()).toBeUndefined();
     expect(glyphNames(renderer)).toEqual([]);
     // A press in the area presses the button.
@@ -320,7 +325,10 @@ describe("hardware button glyphs", () => {
     expect(String(style.transition)).toBe(
       "color 0.12s ease, opacity 0.12s ease, transform 0.12s ease",
     );
-    expect(cap(renderer, "Power").props.style.transition).toBe("transform 0.12s ease");
+    const capSprite = cap(renderer, "Power").find(
+      (node) => typeof node.type === "string" && "data-devicekit-cap-sprite" in node.props,
+    );
+    expect(capSprite.props.style.transition).toBe("transform 0.12s ease");
   });
 
   test("slides a hidden icon toward the bezel and out of pointer reach", async () => {
