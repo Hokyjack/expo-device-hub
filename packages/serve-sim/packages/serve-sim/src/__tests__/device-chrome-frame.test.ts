@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act, create } from "react-test-renderer";
 import {
   DeviceKitChrome,
   deviceKitChromeForScreen,
@@ -251,6 +252,60 @@ describe("hardware button glyphs", () => {
         "landscape_right",
       ),
     ]).toEqual(["right"]);
+  });
+
+  test("turning the wheel over the Digital Crown icon turns the crown", async () => {
+    const chrome = {
+      ...chromeFixture(),
+      buttons: [button("digital-crown", { x: 986, y: 500, width: 14, height: 200 })],
+    };
+    const wheelTargets: Array<{ glyph: boolean; handler: (event: unknown) => void }> = [];
+    const turns: number[] = [];
+    await act(async () => {
+      create(
+        createElement(DeviceKitChrome, {
+          chrome,
+          interactive: true,
+          onCrownWheel: (deltaY) => turns.push(deltaY),
+        }),
+        {
+          createNodeMock: (element) => ({
+            addEventListener: (type: string, handler: (event: unknown) => void) => {
+              if (type === "wheel")
+                wheelTargets.push({
+                  glyph: "data-devicekit-glyph" in (element.props as object),
+                  handler,
+                });
+            },
+            removeEventListener: () => {},
+          }),
+        },
+      );
+    });
+    expect(wheelTargets.map((target) => target.glyph).sort()).toEqual([false, true]);
+    let prevented = 0;
+    wheelTargets
+      .find((target) => target.glyph)!
+      .handler({
+        deltaY: 3,
+        deltaMode: 0,
+        preventDefault: () => prevented++,
+        stopPropagation: () => {},
+      });
+    expect(turns).toEqual([3]);
+    expect(prevented).toBe(1);
+  });
+
+  test("hides icons when asked, for full-screen presentation", () => {
+    const chrome = {
+      ...chromeFixture(),
+      buttons: [button("power", { x: 986, y: 500, width: 14, height: 200 })],
+    };
+    expect(
+      renderToStaticMarkup(
+        createElement(DeviceKitChrome, { chrome, interactive: true, showButtonGlyphs: false }),
+      ),
+    ).not.toContain("data-devicekit-glyph");
   });
 
   test("shows no icon for placeholders, inputs without a HID code, or unknown names", () => {

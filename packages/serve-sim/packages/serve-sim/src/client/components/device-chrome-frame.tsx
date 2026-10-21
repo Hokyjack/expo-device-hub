@@ -6,6 +6,7 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 import {
   BellOff,
@@ -44,6 +45,7 @@ export function DeviceKitChrome({
   onCrownWheel,
   containerSize,
   orientation = "portrait",
+  showButtonGlyphs = true,
 }: {
   chrome: DeviceKitChromeDescriptor;
   /** Rendered inside the screen cutout (the live stream, or a black fill). */
@@ -54,6 +56,8 @@ export function DeviceKitChrome({
   onCrownWheel?: (deltaY: number, deltaMode: number) => void;
   containerSize?: { width: number; height: number };
   orientation?: SimulatorOrientation;
+  /** Icons sit outside the frame, so a frame that fills the viewport has no room for them. */
+  showButtonGlyphs?: boolean;
 }) {
   const geometry = deviceKitChromeGeometry(chrome, orientation);
   const rotation = rotationDegreesForOrientation(orientation);
@@ -85,6 +89,7 @@ export function DeviceKitChrome({
       onWheel={interactive && button.name === "digital-crown" ? onCrownWheel : undefined}
       containerSize={artworkSize}
       rotation={rotation}
+      showGlyph={showButtonGlyphs}
     />
   );
 
@@ -214,6 +219,7 @@ function ChromeButton({
   onWheel,
   containerSize,
   rotation = 0,
+  showGlyph = true,
 }: {
   chrome: DeviceKitChromeDescriptor;
   button: DeviceKitChromeButton;
@@ -224,26 +230,31 @@ function ChromeButton({
   containerSize?: { width: number; height: number };
   /** Artwork rotation, undone on the icon so it stays upright. */
   rotation?: number;
+  showGlyph?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
   const activePointerRef = useRef<number | null>(null);
   const elRef = useRef<HTMLDivElement | null>(null);
+  const glyphRef = useRef<HTMLDivElement | null>(null);
 
   // Native (non-passive) wheel listener so it can preventDefault — turning the
   // crown scrolls the watch instead of the page.
   const onWheelRef = useRef(onWheel);
   onWheelRef.current = onWheel;
   useEffect(() => {
-    const el = elRef.current;
-    if (!el || !onWheel) return;
+    // The cap and its icon both turn the crown.
+    const targets = [elRef.current, glyphRef.current].filter((el) => el !== null);
+    if (!targets.length || !onWheel) return;
     const handler = (event: WheelEvent) => {
       event.preventDefault();
       event.stopPropagation();
       onWheelRef.current?.(event.deltaY, event.deltaMode);
     };
-    el.addEventListener("wheel", handler, { passive: false });
-    return () => el.removeEventListener("wheel", handler);
+    for (const el of targets) el.addEventListener("wheel", handler, { passive: false });
+    return () => {
+      for (const el of targets) el.removeEventListener("wheel", handler);
+    };
     // Keyed on presence, not identity: the handler reads onWheelRef.current,
     // so a new closure each render must not tear down and re-add the listener
     // (the parent re-renders every frame during a resize/inertia drag).
@@ -301,12 +312,13 @@ function ChromeButton({
       }
     : {};
 
-  const glyph = pressable ? BUTTON_GLYPHS[button.name] : undefined;
+  const glyph = pressable && showGlyph ? BUTTON_GLYPHS[button.name] : undefined;
 
   return (
     <>
       {glyph && (
         <ButtonGlyph
+          ref={glyphRef}
           chrome={chrome}
           button={button}
           glyph={glyph}
@@ -410,6 +422,7 @@ function ButtonGlyph({
   active,
   rotation,
   handlers,
+  ref,
 }: {
   chrome: DeviceKitChromeDescriptor;
   button: DeviceKitChromeButton;
@@ -417,6 +430,7 @@ function ButtonGlyph({
   active: boolean;
   rotation: number;
   handlers: Record<string, unknown>;
+  ref?: Ref<HTMLDivElement>;
 }) {
   const { frame } = chrome;
   const rect = button.frame;
@@ -434,6 +448,7 @@ function ButtonGlyph({
   const Icon = glyph.icon;
   return (
     <div
+      ref={ref}
       data-devicekit-glyph={button.name}
       aria-hidden
       title={glyph.label}
