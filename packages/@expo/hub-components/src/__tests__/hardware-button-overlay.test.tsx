@@ -329,6 +329,31 @@ test("a hold ends only when every key and pointer holding it lets go", async () 
   expect(presses).toEqual(["power:down", "power:up"]);
 });
 
+test("losing focus ends a key's hold but not the pointer's", async () => {
+  const presses = await render(IPHONE, chrome());
+  const area = () => zone("power");
+  await act(async () =>
+    (area().props.onKeyDown as (event: object) => void)({
+      key: "Enter",
+      code: "Enter",
+      repeat: false,
+      preventDefault() {},
+    }),
+  );
+  await pointer(area().props.onPointerDown, { pointerId: 1 });
+  await act(async () => (area().props.onBlur as () => void)());
+  expect(presses).toEqual(["power:down"]);
+  await pointer(area().props.onPointerUp, { pointerId: 1 });
+  expect(presses).toEqual(["power:down", "power:up"]);
+});
+
+test("losing pointer capture releases that pointer's hold", async () => {
+  const presses = await render(IPHONE, chrome());
+  await pointer(zone("power").props.onPointerDown, { pointerId: 3 });
+  await pointer(zone("power").props.onLostPointerCapture, { pointerId: 3 });
+  expect(presses).toEqual(["power:down", "power:up"]);
+});
+
 test("no frame means no button areas", async () => {
   await render({ ...PIXEL, deviceFrame: null }, null, PIXEL_ASSETS);
   expect(host((props) => "data-hardware-button" in props)).toEqual([]);

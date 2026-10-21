@@ -233,8 +233,13 @@ export function FrameButtonLayer({
           held.current.sources.delete(source);
           if (!held.current.sources.size) releaseHeld();
         };
-        const releaseAll = () => {
-          if (held.current?.key === entry.key) releaseHeld();
+        // Focus loss ends the keys' holds; a captured pointer still sends its own release.
+        const releaseKeys = () => {
+          if (held.current?.key !== entry.key) return;
+          for (const source of held.current.sources) {
+            if (source.startsWith("key:")) held.current.sources.delete(source);
+          }
+          if (!held.current.sources.size) releaseHeld();
         };
         const show = () => onActivity((current) => ({ ...current, hovered: entry.key }));
         const hide = () =>
@@ -259,7 +264,7 @@ export function FrameButtonLayer({
               onPointerLeave={hide}
               onFocus={show}
               onBlur={() => {
-                releaseAll();
+                releaseKeys();
                 hide();
               }}
               onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
@@ -283,6 +288,10 @@ export function FrameButtonLayer({
                 release(`pointer:${event.pointerId}`)
               }
               onPointerCancel={(event: PointerEvent<HTMLDivElement>) =>
+                release(`pointer:${event.pointerId}`)
+              }
+              // After capture is lost, this pointer's up may never reach the area.
+              onLostPointerCapture={(event: PointerEvent<HTMLDivElement>) =>
                 release(`pointer:${event.pointerId}`)
               }
             />
