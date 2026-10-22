@@ -5,7 +5,7 @@
 **Systems:** ServeSim, HubClient
 **Author:** Gabe Debes
 **Date:** 2026-09-23
-**Revised:** 2026-10-15 (rotation readback and app actions; clipboard; server-wide preview sharing; capture reboot status and recording admission; device-state recording manifest; settings and device actions; action catalog)
+**Revised:** 2026-10-22 (prepared process handoff; rotation readback and app actions; clipboard; server-wide preview sharing; capture reboot status and recording admission; device-state recording manifest; settings and device actions; action catalog)
 **Related:** LLP 0001, LLP 0002
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
@@ -110,6 +110,35 @@ differs from the copy that serve-sim ships. Each Copy grants it pasteboard
 access. The app and the grant stay after Copy, and the app shows on the Home
 screen. `--disable clipboard`, or `clipboard: false` for `simMiddleware`, does
 not prevent this.
+
+## Prepared process handoff
+
+Prepared process ownership is available only to the local `serve-sim <udid> --adopt`
+CLI. HTTP and `/exec-ws` do not expose ownership or reconfiguration, even to a
+preview-token holder. The CLI uses a private Unix socket, not the preview server
+[observed: `src/session-owner.ts`, `src/middleware.ts`].
+
+The server creates its owner socket and separate random authority in a private
+0700 directory under canonical `/tmp`, with 0600 socket and authority files. This
+directory is outside the host actions' file roots regardless of custom state or
+temporary directories. Local discovery state contains only the owning PID and
+directory reference; neither owner state nor authority enters public preview
+state. The CLI checks file type, OS user, permissions, process identity and startup
+compatibility before claiming the process. The preview bearer token is not owner
+authority [observed: `src/session-owner.ts`, `src/host-paths.ts`].
+
+A compatible local claim consumes the handoff before native configuration starts.
+The server closes its owner listener and removes the authority, rejecting concurrent
+or later claims. Invalid owner credentials or incompatible identity do not consume
+it; malformed configuration or failed native setup does. The caller must replace
+the process after a failed claim [observed: `src/session-owner.ts`].
+
+Adoption applies stream settings, STUN/TURN, CORS/frame origins, sharing, screenshot
+artifacts, and network capture fields/upstream before the CLI reports success.
+Existing captures stop before the job's upstream is applied; requested capture must
+be active before success, and app installation/launch follows through normal typed
+`/exec-ws` actions. `/exec-ws` is not used to enable capture for this handoff
+[observed: `src/index.ts`, `src/middleware.ts`, `src/session-owner.ts`].
 
 ## Preview sharing
 
