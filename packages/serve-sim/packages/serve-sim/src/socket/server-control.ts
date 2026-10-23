@@ -124,7 +124,7 @@ function wireExecSocket(
       try {
         const url = new URL(path, "http://localhost");
         for (const device of url.searchParams.getAll("device"))
-          opts.singleDevicePolicy.target(device);
+          opts.singleDevicePolicy.resolveTarget(device);
       } catch {
         send({ sub, end: true, error: "Subscription is outside this single-device session." });
         return;
@@ -268,7 +268,7 @@ function wireExecSocket(
     if (!reserveAction(id)) return;
     let params = msg.params as Record<string, unknown> | undefined;
     try {
-      if (opts.singleDevicePolicy) params = opts.singleDevicePolicy.action(action, params);
+      if (opts.singleDevicePolicy) params = opts.singleDevicePolicy.scopeAction(action, params);
     } catch (error) {
       actionsInFlight -= 1;
       send({ id, error: error instanceof Error ? error.message : "Invalid device" });

@@ -10,14 +10,14 @@ export class SingleDevicePolicy {
     this.device = device.toUpperCase();
   }
 
-  target(requested?: string | null): string {
+  resolveTarget(requested?: string | null): string {
     if (requested != null && requested.toUpperCase() !== this.device) {
       throw new Error("This single-device session cannot access another device.");
     }
     return this.device;
   }
 
-  action(action: string, params: Record<string, unknown> = {}): Record<string, unknown> {
+  scopeAction(action: string, params: Record<string, unknown> = {}): Record<string, unknown> {
     // These act on host-wide state or create a separate server outside this policy.
     if (["server.detach", "server.kill", "home.watch"].includes(action)) {
       throw new Error(`Action ${action} is unavailable in single-device mode.`);
@@ -27,6 +27,6 @@ export class SingleDevicePolicy {
     }
     // Action schemas discard this field for file-only operations. Every device
     // action gets a concrete target, including when the client omits one.
-    return { ...params, udid: this.target(params.udid as string | undefined) };
+    return { ...params, udid: this.resolveTarget(params.udid as string | undefined) };
   }
 }
