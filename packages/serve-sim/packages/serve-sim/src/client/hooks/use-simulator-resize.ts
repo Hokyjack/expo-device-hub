@@ -33,6 +33,7 @@ type DragStart = {
   startX: number;
   startY: number;
   startWidth: number;
+  changed: boolean;
 };
 
 type Sample = { t: number; x: number };
@@ -54,6 +55,7 @@ export function useSimulatorResize({
 }) {
   const reducedMotion = usePrefersReducedMotion();
   const [isResizing, setIsResizing] = useState(false);
+  const [hasResized, setHasResized] = useState(false);
   const [isInertia, setIsInertia] = useState(false);
   const [handleHovered, setHandleHovered] = useState(false);
   const dragStartRef = useRef<DragStart | null>(null);
@@ -75,7 +77,7 @@ export function useSimulatorResize({
     return restoredSimulatorFrameWidth(defaultWidth, 0, 0, aspectRatio, scale, reservedForChrome);
   }, [aspectRatio, defaultWidth, reservedForChrome]);
   const initialWidth = useMemo(() => readRestoredWidth(), [readRestoredWidth]);
-  // Keep the chosen width independent of temporary panel/viewport constraints.
+  // @ref LLP 0003#preview-layout — constrain display size without erasing the preferred width
   const [frameWidth, setFrameWidth] = useState<number | null>(initialWidth);
   const lastWidthRef = useRef<number | null>(initialWidth);
   const restoredDefaultWidthRef = useRef(defaultWidth);
@@ -111,8 +113,8 @@ export function useSimulatorResize({
       const clamped = clampSimulatorFrameWidth(
         value,
         defaultWidth,
-        dragStartRef.current ? viewportWidth : 0,
-        dragStartRef.current ? viewportHeight : 0,
+        dragStartRef.current?.changed ? viewportWidth : 0,
+        dragStartRef.current?.changed ? viewportHeight : 0,
         aspectRatio,
         reservedForChrome,
       );
@@ -211,6 +213,12 @@ export function useSimulatorResize({
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null;
+        const drag = dragStartRef.current;
+        if (!drag || (!drag.changed && roundToDevicePixel(display) === drag.startWidth)) return;
+        if (!drag.changed) {
+          drag.changed = true;
+          setHasResized(true);
+        }
         writeWidth(display);
         recordSample(display);
       });
@@ -222,17 +230,24 @@ export function useSimulatorResize({
     (pointerId: number, clientX: number, clientY: number) => {
       cancelTween();
       const startWidth = committedWidth;
-      writeWidth(startWidth);
-      dragStartRef.current = { pointerId, startX: clientX, startY: clientY, startWidth };
+      dragStartRef.current = {
+        pointerId,
+        startX: clientX,
+        startY: clientY,
+        startWidth,
+        changed: false,
+      };
+      setHasResized(false);
       samplesRef.current = [{ t: performance.now(), x: startWidth }];
       onStart();
       setIsResizing(true);
     },
-    [cancelTween, committedWidth, onStart, writeWidth],
+    [cancelTween, committedWidth, onStart],
   );
 
   const endDrag = useCallback(() => {
     const start = dragStartRef.current;
+    if (!start) return;
     dragStartRef.current = null;
     if (rafRef.current != null) {
       cancelAnimationFrame(rafRef.current);
@@ -245,6 +260,10 @@ export function useSimulatorResize({
       }
     }
     setIsResizing(false);
+    if (!start.changed) {
+      samplesRef.current = [];
+      return;
+    }
 
     const fromDisplay = lastWidthRef.current ?? defaultWidth;
     const velocity = estimateReleaseVelocity(samplesRef.current);
@@ -406,7 +425,8 @@ export function useSimulatorResize({
 
   return {
     handleRef,
-    width: isResizing || isInertia ? width : committedWidth,
+    width:
+      isResizing && !hasResized ? committedWidth : isResizing || isInertia ? width : committedWidth,
     committedWidth,
     minWidth,
     maxWidth,

@@ -104,3 +104,34 @@ test("starts a pointer resize from the visible constrained size", async () => {
   });
   expect(model.width).toBe(436);
 });
+
+for (const sendStationaryMove of [false, true]) {
+  test(`a handle click preserves the preference (stationary move: ${sendStationaryMove})`, async () => {
+    await render(1280);
+    await render(508);
+    const event = {
+      button: 0,
+      pointerId: 1,
+      clientX: 0,
+      clientY: 0,
+      preventDefault() {},
+      stopPropagation() {},
+      currentTarget: { setPointerCapture() {} },
+    };
+    await act(async () => model.onPointerDown(event as never));
+    expect(model.width).toBe(460);
+    if (sendStationaryMove) {
+      await act(async () => {
+        model.onPointerMove(event as never);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    windowEvents.dispatchEvent(new Event("pagehide"));
+    expect(Number(storage.get(SIMULATOR_RESIZE_SCALE_STORAGE_KEY))).toBe(700 / 320);
+    await act(async () => model.onPointerEnd(event as never));
+    await render(1280);
+    expect(model.width).toBe(700);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(Number(storage.get(SIMULATOR_RESIZE_SCALE_STORAGE_KEY))).toBe(700 / 320);
+  });
+}
