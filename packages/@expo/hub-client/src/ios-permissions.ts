@@ -19,7 +19,10 @@ export function parseIosPermissions(payload: unknown): AppPermission[] {
   return entries;
 }
 
-export function iosPermissionTargetId(baseUrl: string | null, udid: string | null): string | null {
+export function iosPermissionTargetId(
+  baseUrl: string | null | undefined,
+  udid: string | null,
+): string | null {
   return baseUrl && udid ? JSON.stringify([baseUrl, udid]) : null;
 }
 
