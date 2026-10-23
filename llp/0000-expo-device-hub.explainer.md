@@ -71,7 +71,10 @@ The displayed mobile size does not reuse the saved desktop resize preference. Th
 controls and device sidebar toggle remain; the device name, status badge, and AX
 button are hidden. While the phone keyboard is raised, the bottom action toolbar
 is hidden and its space is given to the device; it returns when the keyboard closes.
-Presentation mode keeps its existing sizing behavior.
+The top-right mobile controls collapse into an overlaying vertical menu. While
+typing, the keyboard toggle stays outside the menu. The sidebar toggle remains separate.
+Presentation mode keeps its existing controls and fits the visible viewport,
+including while the phone keyboard is raised.
 [observed: `src/client/client.tsx` and `src/client/hooks/use-mobile-simulator-size.ts`
 in ServeSim; confirmed: Gabe Debes, 2026-10-23, requested mobile layout]
 
