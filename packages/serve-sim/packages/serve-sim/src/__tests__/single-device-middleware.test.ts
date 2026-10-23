@@ -2,15 +2,17 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import WebSocket from "ws";
 import { simMiddleware } from "../middleware";
 import { servePreview, type PreviewServer } from "../runtime";
-import { freePortAsync } from "./helpers";
+import { freePortAsync, recordState, useTempStateDir } from "./helpers";
 
 const DEVICE = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
 const OTHER = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB";
 const TOKEN = "single-device-test";
 let server: PreviewServer;
 let origin: string;
+let stateDirectory: ReturnType<typeof useTempStateDir>;
 
 beforeAll(async () => {
+  stateDirectory = useTempStateDir();
   const port = await freePortAsync();
   origin = `http://127.0.0.1:${port}`;
   server = await servePreview({
@@ -23,7 +25,10 @@ beforeAll(async () => {
     }),
   });
 });
-afterAll(() => server?.stop(true));
+afterAll(() => {
+  server?.stop(true);
+  stateDirectory.restore();
+});
 
 test("rejects query, helper-path, lifecycle, and WebKit escapes before device work", async () => {
   for (const path of [
@@ -31,6 +36,7 @@ test("rejects query, helper-path, lifecycle, and WebKit escapes before device wo
     `/api?device=${DEVICE}&device=${OTHER}`,
     `/helper/${OTHER}/config`,
     `/helper/config?device=${OTHER}`,
+    `/helper/stream.mjpeg?device=${DEVICE}&device=${OTHER}`,
     "/devtools",
     "/devtools/page/foreign",
     "/api?device=booted",
@@ -140,5 +146,48 @@ test("single-device mode preserves the preview's authentication gate", async () 
     await allowed?.text();
   } finally {
     await middleware.dispose();
+  }
+});
+
+test("the pinned preview and state feed recover when a lowercase helper reconnects", async () => {
+  const abort = new AbortController();
+  const events = await fetch(`${origin}/api/events`, { signal: abort.signal });
+  const reader = events.body!.getReader();
+  let buffered = "";
+  const nextConfig = async () => {
+    for (;;) {
+      const end = buffered.indexOf("\n\n");
+      if (end >= 0) {
+        const message = buffered.slice(0, end);
+        buffered = buffered.slice(end + 2);
+        const data = message.split("\n").find((line) => line.startsWith("data: "));
+        if (data) return JSON.parse(data.slice(6));
+      } else {
+        const { done, value } = await reader.read();
+        if (done) throw new Error("State feed closed before the next configuration");
+        buffered += new TextDecoder().decode(value);
+      }
+    }
+  };
+  let remove = () => {};
+  try {
+    expect(await nextConfig()).toBeNull();
+    remove = recordState(DEVICE.toLowerCase(), process.pid, 1);
+    expect((await nextConfig())?.singleDevice).toBe(DEVICE);
+    const attached = await (await fetch(`${origin}/api`)).json();
+    expect(attached?.device.toUpperCase()).toBe(DEVICE);
+    remove();
+    expect(await nextConfig()).toBeNull();
+    expect(await (await fetch(`${origin}/api`)).json()).toBeNull();
+    remove = recordState(DEVICE.toLowerCase(), process.pid, 2);
+    expect((await nextConfig())?.port).toBe(2);
+    const reconnected = await (await fetch(`${origin}/api`)).json();
+    expect(reconnected?.device.toUpperCase()).toBe(DEVICE);
+    expect(reconnected?.singleDevice).toBe(DEVICE);
+    expect((await fetch(`${origin}/api?device=${OTHER}`)).status).toBe(403);
+  } finally {
+    remove();
+    abort.abort();
+    await reader.cancel().catch(() => {});
   }
 });
