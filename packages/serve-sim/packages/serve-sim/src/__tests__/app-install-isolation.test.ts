@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +59,49 @@ test("a stalled preparation child is killed and reported as an install timeout",
       stderr: "App installation timed out.",
     });
     expect(Date.now() - start).toBeLessThan(1500);
+  } finally {
+    shims.restore();
+  }
+});
+
+test.each(["js", "ts"])(
+  "preparation launches a non-executable %s CLI with its runtime",
+  async (extension) => {
+    const directory = await mkdtemp(join(tmpdir(), "install-cli-runtime-"));
+    const shims = installShims({ xcrun: "#!/bin/sh\nexit 0\n" });
+    try {
+      const cli = join(directory, `prepare.${extension}`);
+      await writeFile(
+        cli,
+        extension === "ts"
+          ? "const source: string = process.argv[3]!; console.log(JSON.stringify(source));"
+          : "console.log(JSON.stringify(process.argv[3]));",
+        { mode: 0o600 },
+      );
+      const result = await installAppAsync(UDID, "/unused", Date.now() + 3000, cli);
+      expect(result.exitCode, result.stderr).toBe(0);
+    } finally {
+      shims.restore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test("cleanup uses the remaining action budget for a slow removal", async () => {
+  const shims = installShims({
+    xcrun: "#!/bin/sh\nexit 0\n",
+    prepare: '#!/bin/sh\nprintf \'"%s"\\n\' "$2"\n',
+    rm: '#!/bin/sh\nsleep 1.2\nexec /bin/rm "$@"\n',
+  });
+  try {
+    const result = await installAppAsync(
+      UDID,
+      "/unused",
+      Date.now() + 4000,
+      join(shims.dir, "prepare"),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
   } finally {
     shims.restore();
   }

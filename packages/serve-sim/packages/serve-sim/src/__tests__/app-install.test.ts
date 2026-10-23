@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -398,5 +398,72 @@ test("an archive cannot make its extraction root writable by other users", async
     expect(result.stdout.trim()).toBe("700");
   } finally {
     checking.restore();
+  }
+});
+
+test.each([false, true])(
+  "hard-link chains resolve directly to the extracted file: %s",
+  async (reverse) => {
+    const links = [
+      { path: "Framework.app/bin", type: "Link" as const, target: "Framework.app/alias" },
+      { path: "Framework.app/alias", type: "Link" as const, target: "Framework.app/real" },
+    ];
+    if (reverse) links.reverse();
+    const result = await install(
+      await rawArchive("hard-chain.tgz", [
+        ...bundleEntries,
+        ...links,
+        { path: "Framework.app/real", body: "target" },
+      ]),
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+  },
+);
+
+test.each([false, true])(
+  "deferred archive links cannot redirect extraction writes: %s",
+  async (reverse) => {
+    const canary = await mkdtemp(join(tmpdir(), "owned-archive-canary-"));
+    try {
+      await writeFile(join(canary, "value"), "unchanged");
+      const entries = [
+        {
+          path: "Framework.app/redirect",
+          type: "SymbolicLink" as const,
+          target: "../../" + basename(canary),
+        },
+        { path: "Framework.app/redirect/value", body: "overwrite" },
+      ];
+      if (reverse) entries.reverse();
+      const result = await install(
+        await rawArchive("parent-link.tgz", [...bundleEntries, ...entries]),
+      );
+      expect(result.exitCode).toBe(1);
+      expect(await readFile(join(canary, "value"), "utf8")).toBe("unchanged");
+    } finally {
+      await rm(canary, { recursive: true, force: true });
+    }
+  },
+);
+
+test("failed cleanup cannot accumulate another extraction tree in this process", async () => {
+  const archive = await rawArchive("cleanup-retry.tgz", bundleEntries);
+  const failing = installShims({ rm: "#!/bin/sh\nexit 1\n" });
+  const directories = new Set<string>();
+  try {
+    const first = await install(archive);
+    if (first.stdout.trim()) directories.add(dirname(installedPath(first.stdout)));
+    expect(first.exitCode).toBe(0);
+    expect(first.stderr).toContain("could not be removed");
+    const second = await install(archive);
+    if (second.stdout.trim()) directories.add(dirname(installedPath(second.stdout)));
+    expect(second.exitCode).toBe(1);
+    expect(directories.size).toBe(1);
+  } finally {
+    failing.restore();
+    for (const directory of directories) {
+      expect(basename(directory).startsWith("serve-sim-app-install-")).toBe(true);
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 });

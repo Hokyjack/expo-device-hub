@@ -6,11 +6,15 @@ import {
   createSerialQueue,
   installAppInvocation,
   runInvocation,
+  serveSimInvocation,
   type HostActionResult,
 } from "./host-actions-utils";
 
 const installArchive = createSerialQueue();
-const CLEANUP_TIMEOUT_MS = 1000;
+const CLEANUP_GRACE_MS = 10_000;
+// One private path per serving process bounds leftovers even if removal fails.
+// The preparation child's exclusive mkdir refuses another extraction into it.
+const EXTRACTION_DIRECTORY = join(tmpdir(), `serve-sim-app-install-${process.pid}-${randomUUID()}`);
 
 export async function installAppAsync(
   udid: string,
@@ -19,7 +23,6 @@ export async function installAppAsync(
   serveSimBinPath = "serve-sim",
 ): Promise<HostActionResult> {
   return installArchive(async () => {
-    const directory = join(tmpdir(), `serve-sim-app-install-${randomUUID()}`);
     const remaining = () => Math.max(1, deadline - Date.now());
     let result: HostActionResult = {
       stdout: "",
@@ -30,14 +33,20 @@ export async function installAppAsync(
     try {
       if (Date.now() < deadline) {
         const prepared = await runInvocation({
-          file: serveSimBinPath,
-          args: ["_prepare-app-install", path, directory],
+          ...serveSimInvocation(serveSimBinPath, [
+            "_prepare-app-install",
+            path,
+            EXTRACTION_DIRECTORY,
+          ]),
           timeoutMs: remaining(),
         });
         if (prepared.exitCode !== 0) result = prepared;
         else if (Date.now() < deadline) {
           const app: unknown = JSON.parse(prepared.stdout);
-          if (typeof app !== "string" || !(app === path || app.startsWith(directory + "/")))
+          if (
+            typeof app !== "string" ||
+            !(app === path || app.startsWith(EXTRACTION_DIRECTORY + "/"))
+          )
             throw new Error("App preparation returned an invalid path.");
           result = await runInvocation({
             ...installAppInvocation(udid, app),
@@ -50,11 +59,11 @@ export async function installAppAsync(
     } finally {
       if (result.timedOut) result.stderr = "App installation timed out.";
       // Preparation has exited, closing all writers before removal. Cleanup
-      // gets one bounded second after an expired action deadline.
+      // uses the remaining action budget, with a bounded grace after expiry.
       const cleanup = await runInvocation({
         file: "rm",
-        args: ["-rf", "--", directory],
-        timeoutMs: CLEANUP_TIMEOUT_MS,
+        args: ["-rf", "--", EXTRACTION_DIRECTORY],
+        timeoutMs: Math.max(CLEANUP_GRACE_MS, remaining()),
       });
       if (cleanup.exitCode !== 0)
         result.stderr += " Temporary app files could not be removed; the host may need cleanup.";

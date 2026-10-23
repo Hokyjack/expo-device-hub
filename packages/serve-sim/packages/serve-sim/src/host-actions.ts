@@ -12,6 +12,7 @@ import {
   type Invocation,
   ok,
   runInvocation,
+  serveSimInvocation,
   redactHostPaths,
   actionTimeoutMs,
 } from "./host-actions-utils";
@@ -525,12 +526,6 @@ function parseParams<A extends HostActionName>(action: A, raw: unknown): ParamsF
     );
   }
   return result.data as ParamsFor<A>;
-}
-
-function serveSimInvocation(binPath: string, args: string[]): Invocation {
-  if (binPath.endsWith(".ts")) return { file: "bun", args: [binPath, ...args] };
-  if (binPath.endsWith(".js")) return { file: "node", args: [binPath, ...args] };
-  return { file: binPath, args };
 }
 
 function buildInvocation(action: InvocationAction, raw: unknown, binPath: string): Invocation {

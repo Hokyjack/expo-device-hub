@@ -81,7 +81,15 @@ export function prepareAppInstall(path: string, directory: string): string {
     if (readSync(fd, header, 0, 2, 0) !== 2 || header[0] !== 0x1f || header[1] !== 0x8b)
       throw new Error(UNSUPPORTED_INSTALL_FORMAT);
     if (source.size > MAX_BYTES) throw new Error("App archive exceeds the compressed size limit.");
-    mkdirSync(directory, { mode: 0o700 });
+    try {
+      mkdirSync(directory, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST")
+        throw new Error(
+          "Previous app files still need cleanup. Retry the install or check the host logs.",
+        );
+      throw error;
+    }
     const links = new Map<string, ArchiveLink>();
     const names = new Map<string, string>();
     let bytes = 0,
