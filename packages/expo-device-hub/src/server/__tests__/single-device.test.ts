@@ -2,17 +2,33 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { parseCliOptions } from "../cli/options";
 import { configureClientShell } from "../client-shell";
+import type { HubDevice } from "../devices";
 import {
   filterSessionDevices,
   isSessionDevice,
   parseSingleDevice,
-  sessionEmuRequest,
+  readSingleDevice,
+  scopeEmuRequest,
   refuseSingleDeviceSocket,
 } from "../single-device";
 
 const ID = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
 
 describe("single-device sessions", () => {
+  test("an omitted policy preserves multi-device discovery", () => {
+    expect(isSessionDevice(undefined, "ios", ID)).toBe(true);
+    expect(isSessionDevice(undefined, "android", "emulator-5554")).toBe(true);
+  });
+  test("standalone-only environment options do not affect plugin mode", () => {
+    const env = { EXPO_DEVICE_HUB_SINGLE_DEVICE: ID, EXPO_DEVICE_HUB_PLATFORM: "ios" };
+    expect(readSingleDevice(env)).toBeUndefined();
+    expect(readSingleDevice({ ...env, EXPO_DEVICE_HUB_BASE_PATH: "/plugin" })).toBeUndefined();
+    expect(readSingleDevice({ ...env, EXPO_DEVICE_HUB_BASE_PATH: "" })).toEqual({
+      platform: "ios",
+      id: ID,
+    });
+  });
+
   test("a refused socket cannot crash the host with a late protocol error", () => {
     const socket = new EventEmitter() as EventEmitter & { close(): void };
     let closed = false;
@@ -38,11 +54,20 @@ describe("single-device sessions", () => {
 
   test("discovery and shell use only the startup identity", () => {
     const policy = parseSingleDevice(ID, "ios")!;
-    const device = { platform: "ios", id: ID } as any;
+    const device: HubDevice = {
+      platform: "ios",
+      id: ID,
+      name: "Pinned Simulator",
+      version: "26.5",
+      booted: true,
+      physical: false,
+      supported: true,
+      deviceFrame: null,
+    };
     const filtered = filterSessionDevices(
       {
         simulators: [device, { ...device, id: "other" }],
-        emulators: [{ platform: "android", id: ID } as any],
+        emulators: [{ ...device, platform: "android" }],
       },
       policy,
     );
@@ -56,7 +81,7 @@ describe("single-device sessions", () => {
 
   test("Android query defaults cannot select another device or call fleet actions", () => {
     const policy = parseSingleDevice("emulator-5554", "android")!;
-    const scoped = sessionEmuRequest(
+    const scoped = scopeEmuRequest(
       new Request("http://localhost/vendor/serve-emu/api/screenshot"),
       policy,
     )!;
@@ -71,11 +96,11 @@ describe("single-device sessions", () => {
       "/api?device=emulator-5554&device=other",
     ]) {
       expect(
-        sessionEmuRequest(new Request(`http://localhost/vendor/serve-emu${path}`), policy),
+        scopeEmuRequest(new Request(`http://localhost/vendor/serve-emu${path}`), policy),
       ).toBeNull();
     }
     expect(
-      sessionEmuRequest(new Request("http://localhost/api"), parseSingleDevice(ID, "ios")),
+      scopeEmuRequest(new Request("http://localhost/api"), parseSingleDevice(ID, "ios")),
     ).toBeNull();
   });
 });

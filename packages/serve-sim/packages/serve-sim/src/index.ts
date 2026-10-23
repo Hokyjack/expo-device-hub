@@ -2435,7 +2435,7 @@ Examples:
       try {
         const policy = new SingleDevicePolicy(opts.singleDevice);
         if (devices.length > 1) throw new Error("--single-device accepts only one startup target.");
-        for (const device of devices) policy.target(device);
+        for (const device of devices) policy.resolveTarget(device);
         if (
           opts.detach ||
           opts.preview === false ||

@@ -1,8 +1,3 @@
-import {
-  SERVER_SINGLE_DEVICE,
-  singleDeviceRefusal,
-  refuseSingleDeviceSocket,
-} from "./single-device";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +14,11 @@ import {
   serveSimAllowsOrigin,
 } from "./serve-sim-options";
 import { FRAME_ANCESTORS, SESSION_TOKEN } from "./session-token";
+import {
+  SERVER_SINGLE_DEVICE,
+  singleDeviceRefusal,
+  refuseSingleDeviceSocket,
+} from "./single-device";
 
 export const SIM_PREFIX = "/vendor/serve-sim";
 /**

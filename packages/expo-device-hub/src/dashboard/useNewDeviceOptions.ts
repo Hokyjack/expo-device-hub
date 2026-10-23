@@ -1,7 +1,7 @@
-import { dashboardSingleDevice } from "../single-device";
 import { type NewDeviceOptions, type Platform } from "@expo/hub-components";
 import { useEffect, useState } from "react";
 
+import { dashboardSingleDevice } from "../single-device";
 import { basePath } from "./basePath";
 import { logUtilityErrors, type UtilityError } from "./utilityErrors";
 

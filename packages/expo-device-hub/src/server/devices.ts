@@ -14,7 +14,6 @@
  * sidebar can consume `/api/devices` directly.
  */
 
-import { filterSessionDevices } from "./single-device";
 import { type AndroidDevice, listDevices as listAndroidDevices } from "@expo/hub-android-utils";
 import { listDevices as listAppleDevices } from "@expo/hub-apple-utils";
 
@@ -27,6 +26,7 @@ import {
   isSupportedAndroidDevice,
   isSupportedAppleDevice,
 } from "./device-support";
+import { filterSessionDevices } from "./single-device";
 import { type SerializableError, toSerializableError } from "./utility-errors";
 
 export type HubDevicePlatform = PlatformFilter;
