@@ -332,9 +332,8 @@ static void RecordScroll(NSString *kind, NSDictionary *data) {
   // for code types the output says it can find.
   for (AVCaptureConnection *connection in output.connections) connection.enabled = YES;
   NSArray<AVMetadataObjectType> *available = output.availableMetadataObjectTypes;
-  output.metadataObjectTypes = [available containsObject:AVMetadataObjectTypeQRCode]
-      ? @[ AVMetadataObjectTypeQRCode ]
-      : @[];
+  output.metadataObjectTypes = [@[ AVMetadataObjectTypeQRCode, AVMetadataObjectTypeEAN13Code ]
+      filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF IN %@", available]];
   self.preview = [AVCaptureVideoPreviewLayer layerWithSession:session];
   self.preview.frame = view.bounds;
   [view.layer addSublayer:self.preview];
@@ -356,6 +355,23 @@ static void RecordScroll(NSString *kind, NSDictionary *data) {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC), dispatch_get_main_queue(), ^{
     Record(@"camera-alive", self.output == nil ? @"output-released" : @"output-alive");
   });
+}
+
+// expo-camera reads each code through the preview layer's transform.
+- (void)captureOutput:(AVCaptureOutput *)output
+    didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)objects
+              fromConnection:(AVCaptureConnection *)connection {
+  for (AVMetadataObject *object in objects) {
+    AVMetadataObject *shown = [self.preview transformedMetadataObjectForMetadataObject:object];
+    if (![shown isKindOfClass:AVMetadataMachineReadableCodeObject.class]) continue;
+    AVMetadataMachineReadableCodeObject *code = (AVMetadataMachineReadableCodeObject *)shown;
+    CGRect bounds = code.bounds;
+    CGSize size = self.preview.bounds.size;
+    Record(@"camera-code",
+           [NSString stringWithFormat:@"%@ %@ center=%.2f,%.2f", code.type, code.stringValue,
+                                      (bounds.origin.x + bounds.size.width / 2) / size.width,
+                                      (bounds.origin.y + bounds.size.height / 2) / size.height]);
+  }
 }
 
 @end

@@ -87,6 +87,26 @@ function writeBmp(name: string, columns: number[], height: number): string {
   return path;
 }
 
+// EAN-13 digit codes: the left-hand odd-parity (L) codes for 0-9, and which
+// left-hand digits use the even-parity (G) codes, chosen by the first digit.
+const EAN_L = "0001101 0011001 0010011 0111101 0100011 0110001 0101111 0111011 0110111 0001011";
+const EAN_PARITY = "LLLLLL LLGLGG LLGGLG LLGGGL LGLLGG LGGLLG LGGGLL LGLGLG LGLGGL LGGLGL";
+
+// EAN-13 5901234123457 as bars, 4 px per module, with a 12-module quiet zone.
+function ean13Bars(): number[] {
+  const digits = [..."5901234123457"].map(Number);
+  const L = EAN_L.split(" ");
+  const R = L.map((code) => code.replace(/./g, (bit) => (bit === "0" ? "1" : "0")));
+  const G = R.map((code) => [...code].reverse().join(""));
+  const parity = EAN_PARITY.split(" ")[digits[0]!]!;
+  let modules = "101";
+  for (let i = 1; i <= 6; i++) modules += (parity[i - 1] === "L" ? L : G)[digits[i]!];
+  modules += "01010";
+  for (let i = 7; i <= 12; i++) modules += R[digits[i]!];
+  modules = `${"0".repeat(12)}${modules}101${"0".repeat(12)}`;
+  return [...modules].flatMap((bit) => Array<number>(4).fill(bit === "1" ? 0 : 0xff));
+}
+
 beforeAll(() => {
   if (!ready) return;
   try {
@@ -124,6 +144,28 @@ test.skipIf(!ready)(
     // Releasing the metadata output used to release a fake AVCaptureConnection
     // into AVFoundation's -dealloc, which crashed the app (SIGSEGV). A crashed
     // app records nothing more.
+    expect(await waitForRecord("camera-alive", pid)).toBe("output-released");
+  },
+  60_000,
+);
+
+test.skipIf(!ready)(
+  "delivers a barcode in the injected feed to the scanner",
+  async () => {
+    const barcode = writeBmp("ean13.bmp", ean13Bars(), 240);
+    const { pid } = JSON.parse(camera([APP, "--file", barcode, "--mirror", "off"])) as {
+      pid: number;
+    };
+    await openUrlInApp(udid!, APP, "serve-sim-fixture://camera/open");
+    // The fixture reads the code through the preview layer, as expo-camera
+    // does. The frame fills the layer aspect-fill, so a centred code stays centred.
+    const code = await waitForRecord("camera-code", pid);
+    expect(code).toStartWith("org.gs1.EAN-13 5901234123457 center=");
+    const [x, y] = code!.split("center=")[1]!.split(",").map(Number);
+    expect(Math.abs(x! - 0.5)).toBeLessThan(0.05);
+    expect(Math.abs(y! - 0.5)).toBeLessThan(0.05);
+
+    await openUrlInApp(udid!, APP, "serve-sim-fixture://camera/close");
     expect(await waitForRecord("camera-alive", pid)).toBe("output-released");
   },
   60_000,
