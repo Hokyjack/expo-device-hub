@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useAppPermissions } from "../useAppPermissions";
+import { iosPermissionTargetId } from "../ios-permissions";
 import { type PermissionsBackend } from "../app-permissions";
 import { type AppPermission } from "../types";
 
@@ -19,8 +20,21 @@ function deferred() {
   });
   return { promise, resolve, reject };
 }
-function Harness({ backend, app = "app" }: { backend: PermissionsBackend; app?: string }) {
-  client = useAppPermissions({ active: true, backend, appId: app, targetId: "device" });
+function Harness({
+  backend,
+  app = "app",
+  host = "http://host-a/sim",
+}: {
+  backend: PermissionsBackend;
+  app?: string;
+  host?: string;
+}) {
+  client = useAppPermissions({
+    active: true,
+    backend,
+    appId: app,
+    targetId: iosPermissionTargetId(host, "device"),
+  });
   return null;
 }
 afterEach(async () => {
@@ -378,5 +392,77 @@ test("a retired backend's recovery snapshot cannot replace a fresh backend read"
   await act(async () => client.refreshPermissions());
   await act(async () => recovery.resolve(rows("granted")));
   expect(client.permissions?.[0].state).toBe("denied");
+  expect(client.permissionsPending.size).toBe(0);
+});
+
+test("backend replacement clears stale rows while retaining an outstanding reset", async () => {
+  const reset = deferred();
+  const backend: PermissionsBackend = {
+    list: async () => rows("granted"),
+    write: async () => [],
+    reset: () => reset.promise,
+  };
+  let reads = 0;
+  const replacement = {
+    ...backend,
+    list: async () => {
+      if (++reads === 1) throw new Error("replacement unavailable");
+      return rows("undetermined");
+    },
+  };
+  await act(async () => {
+    renderer = create(<Harness backend={backend} />);
+  });
+  await act(async () => client.refreshPermissions());
+  await act(async () => client.resetPermissions());
+  await act(async () => renderer.update(<Harness backend={replacement} />));
+  expect(client.permissions).toBeNull();
+  expect(client.permissionsPending.has("camera")).toBe(true);
+  await act(async () => client.refreshPermissions());
+  expect(client.permissions).toBeNull();
+  expect(client.permissionsError).toBe("replacement unavailable");
+  expect(client.permissionsPending.has("camera")).toBe(true);
+  await act(async () => reset.resolve(rows("undetermined")));
+  expect(client.permissions?.[0].state).toBe("undetermined");
+  expect(client.permissionsPending.size).toBe(0);
+});
+
+test("same-UDID hosts have independent controls and returning retains the original reset", async () => {
+  const reset = deferred();
+  const calls: string[] = [];
+  const a: PermissionsBackend = {
+    list: async () => rows("granted"),
+    write: async () => {
+      calls.push("write:A");
+      return rows("granted");
+    },
+    reset: () => {
+      calls.push("reset:A");
+      return reset.promise;
+    },
+  };
+  const b: PermissionsBackend = {
+    list: async () => rows("denied"),
+    write: async () => {
+      calls.push("write:B");
+      return rows("granted");
+    },
+    reset: async () => [],
+  };
+  await act(async () => {
+    renderer = create(<Harness backend={a} host="http://host-a/sim" />);
+  });
+  await act(async () => client.refreshPermissions());
+  await act(async () => client.resetPermissions());
+  await act(async () => renderer.update(<Harness backend={b} host="http://host-b/sim" />));
+  expect(client.permissionsPending.size).toBe(0);
+  await act(async () => client.refreshPermissions());
+  await act(async () => client.setPermission("camera", "grant"));
+  expect(calls).toEqual(["reset:A", "write:B"]);
+  await act(async () => renderer.update(<Harness backend={a} host="http://host-a/sim" />));
+  expect(client.permissionsPending.has("camera")).toBe(true);
+  await act(async () => client.setPermission("camera", "grant"));
+  expect(calls).toEqual(["reset:A", "write:B"]);
+  await act(async () => reset.resolve(rows("undetermined")));
   expect(client.permissionsPending.size).toBe(0);
 });

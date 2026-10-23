@@ -59,7 +59,7 @@ import {
 import { hostUiRequest, runHostAction } from "./exec-ws";
 import { fetchIosAppIcon, getIosAppDetails } from "./ios-app-details";
 import { clearIosLocation, setIosLocation } from "./ios-location";
-import { iosPermissionsBackend } from "./ios-permissions";
+import { iosPermissionTargetId, iosPermissionsBackend } from "./ios-permissions";
 import { fetchScreenshot } from "./screenshot";
 import { iosMessageForKeyboardInput } from "./keyboard";
 import {
@@ -1593,7 +1593,7 @@ export function useIosDeviceClient(options: DeviceConnectionOptions): DeviceClie
     [runAction, deviceUdid],
   );
   const appPermissions = useAppPermissions({
-    targetId: deviceUdid,
+    targetId: iosPermissionTargetId(baseUrl, deviceUdid),
     active,
     appId: foregroundApp?.id ?? null,
     backend: permissionsBackend,

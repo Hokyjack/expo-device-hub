@@ -19,6 +19,10 @@ export function parseIosPermissions(payload: unknown): AppPermission[] {
   return entries;
 }
 
+export function iosPermissionTargetId(_baseUrl: string | null, udid: string | null): string | null {
+  return udid;
+}
+
 // @ref LLP 0013#app-permissions — read after writes; never infer state from an ACK
 export function iosPermissionsBackend(run: RunHostAction, udid: string): PermissionsBackend {
   async function action(name: string, params: Parameters<RunHostAction>[1]) {
