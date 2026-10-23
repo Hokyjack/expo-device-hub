@@ -1,0 +1,58 @@
+Stack-tip build: cd69cb5ed13e636b7f53855207e5baf842584bd1
+
+$ node packages/serve-sim/packages/serve-sim/dist/serve-sim.js --single-device C62E91C5-AD74-4A02-A8C8-005893479019 --port 49419 --codec mjpeg
+
+[startup] {"phase":"cli","version":"0.10.4"}
+[startup] {"phase":"device-resolution","status":"started"}
+[startup] {"phase":"device-resolution","status":"complete","durationMs":0}
+[startup] {"phase":"simulator-boot","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[startup] {"phase":"simulator-boot","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":1236}
+[startup] {"phase":"simulator-bootstatus","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[startup] {"phase":"simulator-bootstatus","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":76505}
+[startup] {"phase":"stale-loader-cleanup","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[startup] {"phase":"stale-loader-cleanup","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":1261}
+[startup] {"phase":"loader-and-defaults","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[startup] {"phase":"loader-and-defaults","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":4968}
+[startup] {"phase":"capture-module","status":"started"}
+[startup] {"phase":"capture-module","status":"complete","durationMs":0}
+[startup] {"phase":"preview-module","status":"started"}
+[startup] {"phase":"preview-module","status":"complete","durationMs":25}
+[startup] {"phase":"preview-middleware","status":"started"}
+[startup] {"phase":"preview-middleware","status":"complete","durationMs":2}
+[startup] {"phase":"http-listener","status":"started"}
+[startup] {"phase":"http-listener","status":"complete","durationMs":6}
+[startup] {"phase":"state-publication","status":"started"}
+[startup] {"phase":"state-publication","status":"complete","durationMs":0}
+
+  - Local:   http://localhost:49419
+  - Network: use --host 0.0.0.0 to expose on http://10.0.1.112:49419
+
+[startup] {"phase":"device-options","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[startup] {"phase":"device-options","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":1}
+[startup] {"phase":"native-capture","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[capture] Framebuffer: 1206x2622 (direct IOSurface, zero-copy)
+[capture] Surface size changed: 1206x2622
+[capture] Frame callbacks registered + 60Hz IOSurface poll + 5fps idle floor
+[startup] {"phase":"native-capture","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":1165}
+[startup] {"phase":"screen-configuration","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[startup] {"phase":"screen-configuration","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":951}
+[startup] {"phase":"device-options","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[startup] {"phase":"device-options","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":662}
+[serve-sim] Could not restore the hardware keyboard. Reconnect or run `serve-sim ui hardware-keyboard on`: Error: An error was encountered processing the command (domain=com.apple.CoreSimulator.LaunchdSimError, code=124):
+Process spawn via launchd failed.
+Underlying error (domain=SimXPCErrorDomain, code=124):
+	Domain is tearing down
+    at file:///private/tmp/gwdp-single-device-stack-20261023/packages/serve-sim/packages/serve-sim/dist/serve-sim.js:119:7851
+    at ChildProcess.exithandler (node:child_process:424:5)
+    at ChildProcess.emit (node:events:519:28)
+    at maybeClose (node:internal/child_process:1101:16)
+    at ChildProcess._handle.onexit (node:internal/child_process:304:5)
+[startup] {"phase":"device-options","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[startup] {"phase":"device-options","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":1620}
+[startup] {"phase":"native-capture","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[capture] Framebuffer: 1206x2622 (direct IOSurface, zero-copy)
+[capture] Surface size changed: 1206x2622
+[capture] Frame callbacks registered + 60Hz IOSurface poll + 5fps idle floor
+[startup] {"phase":"native-capture","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":204}
+[startup] {"phase":"screen-configuration","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"started"}
+[startup] {"phase":"screen-configuration","device":"C62E91C5-AD74-4A02-A8C8-005893479019","status":"complete","durationMs":395}

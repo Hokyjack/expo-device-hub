@@ -1,0 +1,62 @@
+{
+  "normal": {
+    "viewport": 1402,
+    "frameWidth": 347,
+    "center": 700.796875,
+    "paddingLeft": "24px",
+    "paddingRight": "24px",
+    "expectedCenter": 701,
+    "sidebar": false,
+    "canvas": []
+  },
+  "tools": {
+    "viewport": 1402,
+    "frameWidth": 347,
+    "center": 534.796875,
+    "paddingLeft": "24px",
+    "paddingRight": "356px",
+    "expectedCenter": 535,
+    "sidebar": false,
+    "canvas": [
+      {
+        "width": 249,
+        "height": 171
+      }
+    ]
+  },
+  "before": {
+    "viewport": 640,
+    "frameWidth": 347,
+    "center": 319.796875,
+    "paddingLeft": "24px",
+    "paddingRight": "24px",
+    "expectedCenter": 320,
+    "sidebar": false,
+    "canvas": []
+  },
+  "constrained": {
+    "viewport": 640,
+    "frameWidth": 250,
+    "center": 154,
+    "paddingLeft": "24px",
+    "paddingRight": "356px",
+    "expectedCenter": 154,
+    "sidebar": false,
+    "canvas": [
+      {
+        "width": 249,
+        "height": 171
+      }
+    ]
+  },
+  "restored": {
+    "viewport": 640,
+    "frameWidth": 347,
+    "center": 319.796875,
+    "paddingLeft": "24px",
+    "paddingRight": "24px",
+    "expectedCenter": 320,
+    "sidebar": false,
+    "canvas": []
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "shutdown": {
+    "status": 200,
+    "response": "{\"ok\":true}",
+    "config": null
+  },
+  "start": {
+    "status": 200,
+    "response": "{\"ok\":true}",
+    "config": {
+      "device": "C62E91C5-AD74-4A02-A8C8-005893479019",
+      "singleDevice": "C62E91C5-AD74-4A02-A8C8-005893479019",
+      "port": 49419
+    }
+  }
+}
