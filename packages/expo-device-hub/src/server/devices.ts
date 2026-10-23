@@ -14,6 +14,7 @@
  * sidebar can consume `/api/devices` directly.
  */
 
+import { filterSessionDevices } from "./single-device";
 import { type AndroidDevice, listDevices as listAndroidDevices } from "@expo/hub-android-utils";
 import { listDevices as listAppleDevices } from "@expo/hub-apple-utils";
 
@@ -146,11 +147,11 @@ export async function listDevices(platform?: PlatformFilter): Promise<HubDeviceL
     platform === "ios" ? empty() : listAndroidEmulators(),
   ]);
 
-  return {
+  return filterSessionDevices({
     simulators: simulators.devices,
     emulators: emulators.devices,
     errors: [simulators.error, emulators.error].filter(
       (error): error is SerializableError => error !== null,
     ),
-  };
+  });
 }

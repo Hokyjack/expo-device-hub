@@ -9,6 +9,7 @@
  * so it must be known server-side (see ./serve-sim.ts).
  */
 
+import { SERVER_SINGLE_DEVICE, isSessionDevice, singleDeviceRefusal } from "./single-device";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -113,7 +114,8 @@ async function serveClientIndexHtml(): Promise<Response | null> {
       SERVER_PLATFORM_FILTER,
       SERVER_TRANSPORT,
       SERVER_HIDE_SIDEBAR,
-      SERVER_HIDE_BOOT_DEVICE,
+      SERVER_HIDE_BOOT_DEVICE || !!SERVER_SINGLE_DEVICE,
+      SERVER_SINGLE_DEVICE?.id,
     ),
     {
       headers: {
@@ -240,6 +242,12 @@ async function routeRequest(request: Request): Promise<Response | null> {
       return jsonResponse({ ok: false, error: "Expected { platform, id, name } JSON body" }, 400);
     }
 
+    if (
+      SERVER_SINGLE_DEVICE &&
+      (pathname === REMOVE_DEVICE_ROUTE ||
+        !isSessionDevice(SERVER_SINGLE_DEVICE, action.platform, action.id))
+    )
+      return singleDeviceRefusal();
     try {
       const result =
         pathname === SHUTDOWN_DEVICE_ROUTE
@@ -262,6 +270,12 @@ async function routeRequest(request: Request): Promise<Response | null> {
       return jsonResponse({ ok: false, error: "Expected { platform, id, name } JSON body" }, 400);
     }
 
+    if (
+      SERVER_SINGLE_DEVICE &&
+      (action.platform !== "ios" ||
+        !isSessionDevice(SERVER_SINGLE_DEVICE, action.platform, action.id))
+    )
+      return singleDeviceRefusal();
     try {
       const result = await bootHubDevice(action, emuCameraFeeds);
       if (result.ok) refreshDeviceList();
@@ -272,6 +286,7 @@ async function routeRequest(request: Request): Promise<Response | null> {
   }
 
   if (pathname === CREATE_DEVICE_ROUTE) {
+    if (SERVER_SINGLE_DEVICE) return singleDeviceRefusal();
     if (request.method !== "POST") {
       return jsonResponse({ ok: false, error: "Method Not Allowed" }, 405);
     }
@@ -294,6 +309,7 @@ async function routeRequest(request: Request): Promise<Response | null> {
   }
 
   if (pathname === NEW_DEVICE_OPTIONS_ROUTE) {
+    if (SERVER_SINGLE_DEVICE) return singleDeviceRefusal();
     if (request.method !== "GET") {
       return jsonResponse({ ok: false, error: "Method Not Allowed" }, 405);
     }
