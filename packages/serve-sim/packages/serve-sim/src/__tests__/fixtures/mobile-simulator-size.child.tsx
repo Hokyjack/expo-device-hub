@@ -40,6 +40,12 @@ assert.equal(result, 283, "fill all available portrait height rather than a save
 page.clientHeight = 350;
 await act(async () => onResize());
 assert.equal(result, 108, "refit above the mobile keyboard");
+actionsHeight = 0;
+await act(async () => onResize());
+assert.equal(result, 143, "use the toolbar and its gap when keyboard actions are hidden");
+actionsHeight = 58;
+await act(async () => onResize());
+assert.equal(result, 108, "restore toolbar space after the keyboard closes");
 actionsHeight = 116;
 await act(async () => onResize());
 assert.equal(result, 79, "reserve the actual wrapped controls height");

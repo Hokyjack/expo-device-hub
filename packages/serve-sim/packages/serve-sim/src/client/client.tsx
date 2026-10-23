@@ -2050,7 +2050,11 @@ function AppWithConfig({
             <div
               ref={mobileActionsRef}
               className="inline-flex shrink-0 flex-wrap items-center justify-center gap-2 max-w-[calc(100vw-8px)] sm:max-w-full pb-1 sm:pb-0"
-              style={mobileLayout ? { width: "max-content" } : undefined}
+              style={
+                mobileLayout
+                  ? { width: "max-content", display: phoneKeyboardRaised ? "none" : undefined }
+                  : undefined
+              }
             >
               {showHingeControls && (
                 <HingeControls

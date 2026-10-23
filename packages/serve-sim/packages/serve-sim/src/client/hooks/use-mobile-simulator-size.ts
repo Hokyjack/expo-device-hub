@@ -20,12 +20,12 @@ export function useMobileSimulatorSize(
       const style = getComputedStyle(page);
       const availableWidth =
         page.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const actionsHeight = actions.getBoundingClientRect().height;
       const availableHeight =
         page.clientHeight -
         parseFloat(style.paddingTop) -
         parseFloat(style.paddingBottom) -
-        actions.getBoundingClientRect().height -
-        12;
+        (actionsHeight > 0 ? actionsHeight + 12 : 0);
       setWidth(
         availableHeight <= 0
           ? 0
