@@ -56,7 +56,9 @@ export function AppPermissionsTool({ udid, bundleId }: { udid: string; bundleId:
             ? "grant"
             : payload.location?.Authorization === 1
               ? "revoke"
-              : undefined;
+              : payload.location?.Authorization == null || payload.location.Authorization === 0
+                ? "reset"
+                : undefined;
         setState(next);
         setReadError(null);
       } catch (e) {
