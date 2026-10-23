@@ -168,7 +168,9 @@ socket. Writes never set an optimistic granted/denied state. A page reload or
 helper replacement reads the services again. Request generations reject reads
 for an old target and reads that overlap newer writes. Pending writes stay owned by
 the device/app across target changes and control-channel reconnection until their
-readback finishes. [observed:
+readback finishes. Backend replacement invalidates cached rows and reads while
+retaining pending writes. iOS ownership includes the middleware URL as well as
+the Simulator and app, so equal UDIDs on different hosts remain independent. [observed:
 `ios-permissions.ts`, `useIosDevice.ts`, `useAppPermissions.ts`; serve-sim
 `client/components/app-permissions-tool.tsx`]
 

@@ -19,8 +19,8 @@ export function parseIosPermissions(payload: unknown): AppPermission[] {
   return entries;
 }
 
-export function iosPermissionTargetId(_baseUrl: string | null, udid: string | null): string | null {
-  return udid;
+export function iosPermissionTargetId(baseUrl: string | null, udid: string | null): string | null {
+  return baseUrl && udid ? JSON.stringify([baseUrl, udid]) : null;
 }
 
 // @ref LLP 0013#app-permissions — read after writes; never infer state from an ACK

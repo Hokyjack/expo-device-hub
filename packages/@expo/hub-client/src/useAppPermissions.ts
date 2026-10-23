@@ -69,6 +69,8 @@ export function useAppPermissions({ active, backend, appId, targetId }: UseAppPe
       state.backend = backend;
       state.generation++;
       state.read = null;
+      state.permissions = null;
+      state.readError = null;
     }
     for (const [otherKey, other] of states.current)
       if (otherKey !== key && other.writes.size === 0) states.current.delete(otherKey);
