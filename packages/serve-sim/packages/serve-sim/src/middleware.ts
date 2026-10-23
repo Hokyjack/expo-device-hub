@@ -2012,8 +2012,8 @@ export async function handleCaptureEntriesRequest(
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
   const policy =
     options?.singleDevice === undefined ? null : new SingleDevicePolicy(options.singleDevice);
-  if (policy && options?.device) policy.target(options.device);
-  const allowedGridSnapshot = async (selectedDevice: string | null) => {
+  if (policy && options?.device) policy.resolveTarget(options.device);
+  const readSessionGridSnapshot = async (selectedDevice: string | null) => {
     const snapshot = await readGridSnapshot(selectedDevice, policy?.device);
     if (policy)
       snapshot.simulators = snapshot.simulators.filter(
@@ -2025,9 +2025,9 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     if (!policy) return true;
     try {
       const parsed = new URL(rawUrl, "http://localhost");
-      for (const device of parsed.searchParams.getAll("device")) policy.target(device);
+      for (const device of parsed.searchParams.getAll("device")) policy.resolveTarget(device);
       const helper = helperProxyTarget(rawUrl, helperPrefix);
-      if (helper?.device != null) policy.target(helper.device);
+      if (helper?.device != null) policy.resolveTarget(helper.device);
       // inspect-webkit cannot reconcile its targets with a simulator UDID.
       return (
         parsed.pathname !== devtoolsPrefix && !parsed.pathname.startsWith(`${devtoolsPrefix}/`)
@@ -2118,7 +2118,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
   const handleUiRequest: UiRequestHandler = async (payload) => {
     const p = { ...(payload as object) } as { device?: string; option?: string; value?: string };
-    if (policy) p.device = policy.target(p.device);
+    if (policy) p.device = policy.resolveTarget(p.device);
     // Must start alphanumeric and stay bounded: a leading "-" is parsed as a flag by simctl.
     if (typeof p.device !== "string" || !/^[0-9A-Za-z][0-9A-Za-z-]{0,255}$/.test(p.device)) {
       throw new Error("missing or invalid device udid");
@@ -2366,7 +2366,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     // Static simulator metadata. The browser keeps this catalog in memory and
     // receives state/helper changes through the compact status feed below.
     if (url === base + "/grid/api/catalog") {
-      const { simulators } = await allowedGridSnapshot(selectedDevice);
+      const { simulators } = await readSessionGridSnapshot(selectedDevice);
       const total = simulators.length;
       const { limit, offset } = parseGridPaging(rawUrl);
       const page = limit == null ? simulators : simulators.slice(offset, offset + limit);
@@ -2395,7 +2395,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     }
 
     const computeGridStatuses = async (): Promise<string> => {
-      const { simulators, helperByUdid } = await allowedGridSnapshot(selectedDevice);
+      const { simulators, helperByUdid } = await readSessionGridSnapshot(selectedDevice);
       return JSON.stringify({
         statuses: gridStatusesForRequest(simulators, helperByUdid, req, base, proxyHelpers),
       });
@@ -2493,7 +2493,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
 
     // Grid JSON: every supported simulator, annotated with running helper info if any.
     if (url === base + "/grid/api") {
-      const { simulators, helperByUdid } = await allowedGridSnapshot(selectedDevice);
+      const { simulators, helperByUdid } = await readSessionGridSnapshot(selectedDevice);
       const total = simulators.length;
       const { limit, offset } = parseGridPaging(rawUrl);
       const page = limit == null ? simulators : simulators.slice(offset, offset + limit);
@@ -2540,7 +2540,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         }
         if (policy) {
           try {
-            udid = policy.target(udid);
+            udid = policy.resolveTarget(udid);
           } catch {
             res.writeHead(403, { "Content-Type": "application/json" });
             res.end(
@@ -2599,7 +2599,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         }
         if (policy) {
           try {
-            udid = policy.target(udid);
+            udid = policy.resolveTarget(udid);
           } catch {
             res.writeHead(403, { "Content-Type": "application/json" });
             res.end(
