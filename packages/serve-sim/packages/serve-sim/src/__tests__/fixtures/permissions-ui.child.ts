@@ -30,20 +30,20 @@ async function mount() {
   });
   await act(async () => renderer.root.findByType(CollapsibleSection).props.onOpenChange(true));
 }
-function pressed(title: string) {
+function pressed(title: string, label = "Notifications") {
   return renderer.root
-    .findByProps({ role: "group", "aria-label": "Notifications" })
+    .findByProps({ role: "group", "aria-label": label })
     .findAllByType("button")
     .find((button) => button.props.title === title)!;
 }
-async function reply(state: string) {
+async function reply(state: string, location?: { Authorization: number } | null) {
   const request = requests.shift()!;
   expect(request.action).toBe("permissions.list");
   await act(async () =>
     request.resolve({
       exitCode: 0,
       stderr: "",
-      stdout: JSON.stringify({ permissions: [{ id: "notifications", state }] }),
+      stdout: JSON.stringify({ permissions: [{ id: "notifications", state }], location }),
     }),
   );
 }
@@ -202,4 +202,27 @@ test("an old target's stalled read does not block the new target's focus refresh
     }),
   );
   expect(pressed("Deny").props["aria-pressed"]).toBe(true);
+});
+
+test("Location Always selects Reset for absent and zero authorization after reload", async () => {
+  await mount();
+  await reply("undetermined", null);
+  expect(pressed("Reset", "Location (Always)").props["aria-pressed"]).toBe(true);
+  await act(async () => renderer.unmount());
+  await mount();
+  await reply("undetermined", { Authorization: 0 });
+  expect(pressed("Reset", "Location (Always)").props["aria-pressed"]).toBe(true);
+});
+
+test("Location Always distinguishes when-in-use, always and denied authorization", async () => {
+  await mount();
+  await reply("undetermined", { Authorization: 2 });
+  for (const title of ["Allow", "Deny", "Reset"])
+    expect(pressed(title, "Location (Always)").props["aria-pressed"]).toBe(false);
+  await act(async () => focus?.());
+  await reply("undetermined", { Authorization: 4 });
+  expect(pressed("Allow", "Location (Always)").props["aria-pressed"]).toBe(true);
+  await act(async () => focus?.());
+  await reply("undetermined", { Authorization: 1 });
+  expect(pressed("Deny", "Location (Always)").props["aria-pressed"]).toBe(true);
 });
