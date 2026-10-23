@@ -4,6 +4,7 @@ import {
   ScreenshotDisplay,
   SCREENSHOT_DISPLAY_CHANGED,
 } from "./screenshot-store";
+import { createReadinessReporter } from "./startup-timing";
 import { openSseStream } from "./sse-stream";
 import { parseCaptureProxy } from "./capture/upstream";
 import { execFile, execSync } from "child_process";
@@ -1987,6 +1988,7 @@ export async function handleCaptureEntriesRequest(
 }
 
 export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
+  const reportReadiness = createReadinessReporter();
   validatedAdditionalDylibs();
   const streamSettings =
     options?.streamSettings ?? httpStreamSettingsFromLegacyCodec(options?.codec);
@@ -2690,6 +2692,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       const states = await readServeSimStates();
       const state = selectServeSimState(states, selectedDevice);
       if (!state) {
+        reportReadiness("unavailable", "session-unavailable", selectedDevice ?? undefined);
         res.writeHead(503, {
           "Content-Type": "application/json",
           "Cache-Control": "no-store",
@@ -2699,12 +2702,20 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
       }
       try {
         await getDeviceSession(state.device, streamSettings).start();
+        reportReadiness("ready", undefined, state.device, undefined, selectedDevice ?? null);
         res.writeHead(200, {
           "Content-Type": "application/json",
           "Cache-Control": "no-store",
         });
         res.end(JSON.stringify({ status: "ready", device: state.device }));
-      } catch {
+      } catch (error) {
+        reportReadiness(
+          "unavailable",
+          "capture-start-failed",
+          state.device,
+          error,
+          selectedDevice ?? null,
+        );
         res.writeHead(503, {
           "Content-Type": "application/json",
           "Cache-Control": "no-store",
@@ -3405,6 +3416,7 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
     ssePrefixes: sseStreamPaths(base),
     onUiRequest: handleUiRequest,
     serveSimBinPath: serveSimBinPath(),
+    deviceName: bootedDeviceName,
     onActionResult: (action, params, result) => recordActionEvent(action, params, result),
     onSseRequest(path, websocketRequest) {
       const url = new URL(path, websocketRequest.url);
