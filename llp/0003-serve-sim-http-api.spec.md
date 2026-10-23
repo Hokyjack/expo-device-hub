@@ -644,7 +644,9 @@ TCC writes use `TCCAccessSetForBundleIdWithOptions` and
 `TCCAccessResetForBundleIdWithOptions`, require `kTCCSetNoKill`, and check the
 daemon's Boolean result. TCC reads use read-only SQLite because
 `TCCAccessCopyInformationForBundleId` reports both full and limited Photos access
-as granted. Location writes use `simctl privacy` and wait for locationd's persisted
+as granted. Reads allow SQLite to wait up to 4.5 seconds for transient tccd
+writer locks within a five-second subprocess deadline; non-busy errors remain
+errors. Location writes use `simctl privacy` and wait for locationd's persisted
 `Authorization` readback. CoreLocation's cross-app getter returned 0 while the
 public app API reported always authorization on iOS 27.1, so it is not used. These services have separate caching behavior. Camera and microphone reflected
 live changes. An earlier iOS 27.1 probe also observed live calendar/reminders

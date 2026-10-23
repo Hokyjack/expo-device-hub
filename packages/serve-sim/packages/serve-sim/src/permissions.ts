@@ -210,8 +210,13 @@ function nativePermission<T = unknown>(udid: string, ...args: string[]): T {
   }
 }
 
+// @ref LLP 0003#app-permissions — wait through tccd writer locks within the read budget
 export function readPermissionDatabase(dbPath: string, sql: string): string {
-  return execFileSync("sqlite3", ["-readonly", dbPath, sql], { encoding: "utf-8", timeout: 5000 });
+  // Leave startup/exit time inside the five-second subprocess deadline.
+  return execFileSync("sqlite3", ["-readonly", "-cmd", ".timeout 4500", dbPath, sql], {
+    encoding: "utf-8",
+    timeout: 5000,
+  });
 }
 
 // Reverse of TCC_SERVICES, so `list` reports the same permission names that
