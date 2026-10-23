@@ -174,8 +174,8 @@ the Simulator and app, so equal UDIDs on different hosts remain independent. [ob
 `ios-permissions.ts`, `useIosDevice.ts`, `useAppPermissions.ts`; serve-sim
 `client/components/app-permissions-tool.tsx`]
 
-The backend services and notification startup limitation are described in
-[LLP 0003](0003-serve-sim-http-api.spec.md#app-permissions). The Hub exposes iOS
+The backend services, persistence boundaries and notification startup limitation
+are described in [LLP 0003.000](0003.000-simulator-permissions.explainer.md). The Hub exposes iOS
 permission controls only when an active client has the typed host-action channel.
 An older serve-sim without normalized permission readback reports an update error.
 [observed: `useIosDevice.ts`, `ios-permissions.ts`]
