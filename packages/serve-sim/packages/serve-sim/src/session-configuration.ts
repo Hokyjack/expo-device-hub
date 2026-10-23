@@ -57,6 +57,21 @@ export const sessionConfigurationSchema = z
       .max(4096)
       .refine((value) => value.startsWith("/") && !value.includes("\0"))
       .optional(),
+    videoRecording: z
+      .object({
+        output: z
+          .string()
+          .min(1)
+          .max(4096)
+          .refine((value) => value.startsWith("/") && !value.includes("\0")),
+        recordingId: z
+          .string()
+          .min(1)
+          .max(128)
+          .regex(/^[A-Za-z0-9_-]+$/),
+      })
+      .strict()
+      .optional(),
     networkCapture: z.boolean(),
     networkCaptureFields: z.array(z.enum(CAPTURE_FIELDS)).max(4),
     networkCaptureProxy: z
