@@ -5,7 +5,7 @@
 **Systems:** ServeSim, HubClient
 **Author:** Gabe Debes
 **Date:** 2026-09-23
-**Revised:** 2026-10-23 (Codex: service-backed permissions and mounted CLI resolution; rotation readback and app actions; clipboard; server-wide preview sharing; capture reboot status and recording admission; device-state recording manifest; settings and device actions; action catalog; active-display screenshots and observed hinge readback)
+**Revised:** 2026-10-23 (service-backed permissions, fresh notification initialization boundary and mounted CLI resolution; rotation readback and app actions; clipboard; server-wide preview sharing; capture reboot status and recording admission; device-state recording manifest; settings and device actions; action catalog; active-display screenshots and observed hinge readback)
 **Related:** LLP 0001, LLP 0002
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
@@ -665,10 +665,30 @@ in `__TEXT,__entitlements` and signs ad hoc without private signing entitlements
 This follows Simulator helper loading requirements. It does not inject into or
 restart the target app or SpringBoard. [observed: `Sources/SimPermissions/build.sh`]
 
-On iOS 27.1 an app that has never made its normal notification authorization
-request can report authorized while local scheduling fails with "Source is not
-authorized." Its normal request initializes capabilities without another prompt
-after a grant. Setting `pushSettings` to 63 did not fix that condition. No remote
-APNs delivery is claimed. [observed: prior native runtime experiment, 2026-10-23;
-current workflow coverage in `src/__tests__/permissions.e2e.test.ts`, fresh
-pre-grant case]
+### Fresh notification initialization boundary
+
+A notification grant confirms authorization, not delivery readiness. On iOS 27.1,
+an app that had never made its normal notification authorization request reported
+`UNAuthorizationStatusAuthorized` after a service grant, but scheduling a local
+notification failed with "Source is not authorized." Waiting and relaunching the
+app did not fix it. The app's normal `requestAuthorization` call then returned
+success without a prompt, and local delivery worked without a restart. Subsequent
+live grant, denial and reset changes worked with the app and SpringBoard processes
+unchanged. [observed: native runtime experiment, 2026-10-23; recorded limitation in
+`.github/pr-evidence/simulator-permissions.json`]
+
+No service-only initialization fix has been validated. Setting `pushSettings` to
+63 did not fix the fresh-app scheduling failure; that negative result must not be
+treated as a working initialization recipe or copied into production. A fresh app
+may still need its normal authorization request before notifications can be
+delivered. This is an unresolved support boundary, not proof that initialization
+can never be controlled externally. [observed: native runtime experiment,
+2026-10-23; `.github/pr-evidence/simulator-permissions.json`]
+
+The browser's Granted state therefore describes authorization only. The fresh
+pre-grant runtime test deliberately makes the app's normal request before checking
+enabled alerts and local delivery. It proves pre-grant followed by normal app
+initialization, not grant-only delivery. Neither that test nor the earlier local
+notification experiments establish remote APNs delivery. [observed:
+`src/permissions.ts`; `src/__tests__/permissions.e2e.test.ts`, "a fresh pre-grant is
+authorization; a normal request initializes presentation"]
