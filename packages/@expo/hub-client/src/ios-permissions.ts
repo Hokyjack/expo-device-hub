@@ -19,6 +19,7 @@ export function parseIosPermissions(payload: unknown): AppPermission[] {
   return entries;
 }
 
+// @ref LLP 0013#app-permissions — stable per-host identity preserves reconnect locks without crossing hosts
 export function iosPermissionTargetId(
   baseUrl: string | null | undefined,
   udid: string | null,
