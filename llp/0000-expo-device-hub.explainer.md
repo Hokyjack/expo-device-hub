@@ -63,6 +63,16 @@ serve-sim and serve-emu speak different wire protocols. serve-sim streams MJPEG 
 
 The two protocols differ mainly because the servers started as separate projects [confirmed] (Krystof Woldrich, 2026-10-02).
 
+### Mobile serve-sim layout
+
+Below 640 CSS pixels, the serve-sim preview fits the device to the visible
+viewport after subtracting safe-area padding and the measured action controls.
+The displayed mobile size does not reuse the saved desktop resize preference. The floating
+controls and device sidebar toggle remain; the device name, status badge, and AX
+button are hidden. Presentation mode keeps its existing sizing behavior.
+[observed: `src/client/client.tsx` and `src/client/hooks/use-mobile-simulator-size.ts`
+in ServeSim; confirmed: Gabe Debes, 2026-10-23, requested mobile layout]
+
 ### Direction: one device protocol
 
 The goal is to unify the serve-sim and serve-emu protocols. Until then, every new feature must behave the same on iOS and Android, so that unification stays possible [confirmed] (Krystof Woldrich, 2026-10-02). See [constraint 10](#same-behavior).
