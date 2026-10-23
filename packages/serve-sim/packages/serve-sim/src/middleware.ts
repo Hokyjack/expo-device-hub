@@ -290,7 +290,7 @@ function classifyStaleState(
   booted: Set<string> | null,
   selfPid: number,
 ): StaleStateAction {
-  if (booted && isSimulatorUdid(state.device) && !booted.has(state.device)) {
+  if (booted && isSimulatorUdid(state.device) && !booted.has(state.device.toUpperCase())) {
     return state.pid === selfPid ? "recycle-self" : "recycle-helper";
   }
   return "keep";
@@ -520,7 +520,7 @@ export function selectServeSimState(
   device?: string | null,
 ): ServeSimState | null {
   if (device) {
-    return states.find((state) => state.device === device) ?? null;
+    return states.find((state) => state.device.toUpperCase() === device.toUpperCase()) ?? null;
   }
   return states[0] ?? null;
 }
@@ -1366,7 +1366,7 @@ function sortGridSimulators(
     return 5;
   };
   const stateRank = (device: SimctlDevice): number => {
-    if (helperByUdid.has(device.udid)) return 0;
+    if (helperByUdid.has(device.udid.toUpperCase())) return 0;
     if (selectedDevice && device.udid === selectedDevice) return 1;
     if (device.state === "Booted") return 2;
     if (device.udid === preferredUdid) return 3;
@@ -1427,7 +1427,7 @@ async function readGridSnapshot(
     readServeSimStates(deviceScope),
     listAllSimulators(),
   ]);
-  const helperByUdid = new Map(states.map((state) => [state.device, state] as const));
+  const helperByUdid = new Map(states.map((state) => [state.device.toUpperCase(), state] as const));
   return {
     simulators: sortGridSimulators(simulators, helperByUdid, selectedDevice),
     helperByUdid,
@@ -1442,7 +1442,7 @@ function gridStatusesForRequest(
   proxyHelpers: boolean,
 ): GridDeviceStatus[] {
   return simulators.map((simulator) => {
-    const helper = helperByUdid.get(simulator.udid);
+    const helper = helperByUdid.get(simulator.udid.toUpperCase());
     const remoteHelper = helper
       ? rewriteStateForRequestHost(
           helper,
