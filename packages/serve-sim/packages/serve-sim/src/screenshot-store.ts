@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { readdir, rm, stat, writeFile } from "fs/promises";
+import { readdir, rename, rm, stat, writeFile } from "fs/promises";
 import { join } from "path";
 import { z } from "zod";
 
@@ -51,18 +51,26 @@ async function stagedScreenshotBudgetExceededAsync(): Promise<boolean> {
   }
 }
 
-async function isEmptyFileAsync(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).size === 0;
-  } catch {
-    return false;
-  }
+async function removeEmptyReservationAsync(path: string): Promise<void> {
+  await queueScreenshotAsync(async () => {
+    let size: number;
+    try {
+      size = (await stat(path)).size;
+    } catch {
+      return;
+    }
+    if (size === 0) await rm(path, { force: true });
+  });
 }
 
-export async function captureScreenshotAsync(p: {
-  udid: string;
-  fileName: string;
-}): Promise<HostActionResult> {
+export async function captureScreenshotAsync(
+  p: {
+    udid: string;
+    fileName: string;
+    display: number;
+  },
+  readActiveDisplay?: () => Promise<number>,
+): Promise<HostActionResult> {
   const hours = MAX_SCREENSHOT_AGE_MS / 3_600_000;
   const staged = join(SCREENSHOT_DIR, p.fileName);
   // Only the count and the reservation are serialized: holding the queue across simctl would let one
@@ -91,14 +99,39 @@ export async function captureScreenshotAsync(p: {
       exitCode: 1,
     };
   }
-  const shot = await runInvocation({
-    file: "xcrun",
-    args: ["simctl", "io", p.udid, "screenshot", staged],
-  });
+  let display = p.display;
+  let shot: HostActionResult = { stdout: "", stderr: "", exitCode: 1 };
+  // Publish only a validated panel. Each capture owns its work file, so a
+  // failed retry cannot overwrite or remove another capture of the same name.
+  const temporary = join(SCREENSHOT_DIR, `.capture-${randomUUID()}.png`);
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      shot = await runInvocation({
+        file: "xcrun",
+        args: ["simctl", "io", p.udid, "screenshot", `--display=${display}`, temporary],
+      });
+      if (shot.exitCode !== 0 || !readActiveDisplay) break;
+      const current = await readActiveDisplay();
+      if (current === display) break;
+      display = current;
+      shot = {
+        stdout: "",
+        stderr:
+          "The active display kept changing. Retry the screenshot once the fold has finished.",
+        exitCode: 1,
+      };
+    }
+    if (shot.exitCode === 0) await queueScreenshotAsync(() => rename(temporary, staged));
+  } catch (error) {
+    await removeEmptyReservationAsync(staged);
+    throw error;
+  } finally {
+    await rm(temporary, { force: true });
+  }
   // Or the reservation holds a ceiling slot until the prune. Only while still empty: a second capture
   // of the same name may have written a real screenshot there since.
   if (shot.exitCode !== 0) {
-    if (await isEmptyFileAsync(staged)) await rm(staged, { force: true });
+    await removeEmptyReservationAsync(staged);
     return shot;
   }
   const kept = `stays staged at ${staged} for at least ${hours} hours`;

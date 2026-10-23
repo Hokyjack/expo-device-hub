@@ -5,7 +5,7 @@
 **Systems:** ServeSim, HubClient
 **Author:** Gabe Debes
 **Date:** 2026-09-23
-**Revised:** 2026-10-17 (rotation readback and app actions; clipboard; server-wide preview sharing; capture reboot status and recording admission; device-state recording manifest; settings and device actions; action catalog; observed hinge readback)
+**Revised:** 2026-10-17 (rotation readback and app actions; clipboard; server-wide preview sharing; capture reboot status and recording admission; device-state recording manifest; settings and device actions; action catalog; active-display screenshots and observed hinge readback)
 **Related:** LLP 0001, LLP 0002
 
 > File paths such as `src/…` are relative to `packages/serve-sim/packages/serve-sim`, unless the text gives a path from the repository root.
@@ -557,4 +557,44 @@ The catalog leaves out actions with `hidden: true`: `server.*`, `reveal`,
 `screenshot.thumbnail`, `upload.*` and `actions.describe`. They still run when
 called.
 
-`screenshot.capture` makes a file name when `fileName` is missing.
+`screenshot.capture` takes `{udid, fileName?, display?}` and makes a file name
+when `fileName` is missing. `display` is a positive simctl screen ID. Known non-integrated ports are rejected
+before capture unless the profile declares exactly one screen, as on tvOS; an
+unknown profile leaves explicit selection available. A client
+can capture a particular panel even when it is inactive. Without it, the action
+borrows an existing device session or creates a temporary capture with the
+middleware's trusted settings, then selects the native active display. Temporary
+capture is closed after success or failure; existing streams remain open. If that display cannot be determined,
+the action uses the sole declared screen, or the sole integrated panel when
+other output ports are present, only when the installed device-type capability
+profile proves that selection is unambiguous. Multi-panel and unknown profiles
+fail with a retry message. Legacy iOS profiles that declare only
+`ScreenDimensionsCapability` require a recognized phone/pad idiom and a fresh
+`simctl io enumerate` result: every framebuffer port must have a known class,
+exactly one must be integrated, and its default dimensions must match the
+profile's main screen (allowing rotation). Its display adapter must also list
+exactly one integrated connected screen with matching dimensions and a valid
+numeric ID. Both fallback capture and explicit-ID validation use that ID. A present but malformed `displays` array cannot use
+this legacy path. Public `display` parameters remain numeric. [observed:
+`getScreenshotDisplayIdsAsync`]
+
+Native error details stay in the host logs, rather
+than reaching the client. An inactive
+panel's screenshot may be black.
+
+Captures write to a separate temporary file and publish it to the staged name
+only after active-display validation succeeds. Publication and empty-reservation
+cleanup share the reservation queue so a failed capture cannot delete a
+concurrent successful publication. Failed captures remove their
+temporary pixels and empty reservations, preserving an existing successful
+screenshot of the same name. [observed: `captureScreenshotAsync`]
+
+Native screenshot startup and active-display reads use the configured host-action
+deadline. A timed-out one-shot releases its temporary session and stops native
+startup without waiting for the hung start promise; late continuations cannot
+restart it. Retained viewer sessions stay open. Teardown keeps pending recording promises
+until their results are observed, preserving finalization errors. UDID case aliases share the same
+registry entry. Screenshot profile lookup resolves the selected bundle from
+simctl and reads its capability plist asynchronously, without scanning installed
+bundles on the event loop. [observed: `withScreenshotDeviceSession`,
+`DeviceSession.start`, `DeviceSession.close`, `getScreenshotDisplayIdsAsync`]
