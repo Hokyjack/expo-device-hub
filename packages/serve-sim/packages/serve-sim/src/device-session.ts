@@ -55,6 +55,7 @@ import { readSavedHingeState, writeSavedHingeState } from "./hinge-saved-state";
 import { validatePanelRoute } from "./panel-route";
 import {
   isHingeControlCommand,
+  observedHingeState,
   hingeControlState,
   hingePoseOrientation,
   isTableModeAvailable,
@@ -1756,6 +1757,61 @@ export class DeviceSession {
         }
         break;
       }
+      case 0x13: {
+        if (data.length !== 1) break;
+        const generation = this.inputGeneration;
+        const operation = this.hingeControlUpdate.then(async () => {
+          if (this.supportsHingeAngle !== true || !this.canRunInputControl(generation))
+            throw new Error("Hinge state is unavailable");
+          const observed = this.observedDeviceState;
+          const eligibility =
+            observed === undefined ? undefined : await this.hid.hingeControlEligibility();
+          if (eligibility === null) throw new Error("Hinge state is unavailable");
+          const state =
+            eligibility === undefined
+              ? {
+                  ...observedHingeState({
+                    hingeAngle: this.hingeAngle,
+                    physicalOrientation: this.hingePhysicalOrientation,
+                  }),
+                  hingePose: this.hingePose,
+                }
+              : observedHingeState(eligibility);
+          if (!this.canRunInputControl(generation)) throw new Error("Hinge state is unavailable");
+          ws.send(
+            Buffer.concat([
+              Buffer.from([0x93]),
+              Buffer.from(
+                JSON.stringify({
+                  ok: true,
+                  state: {
+                    ...state,
+                    tableMode: this.tableMode,
+                    ...(observed ? { tableModeActive: eligibility?.tableModeActive } : {}),
+                  },
+                }),
+              ),
+            ]),
+          );
+        });
+        this.hingeControlUpdate = operation.then(
+          () => {},
+          () => {},
+        );
+        try {
+          await operation;
+        } catch {
+          try {
+            ws.send(
+              Buffer.concat([
+                Buffer.from([0x93]),
+                Buffer.from('{"ok":false,"error":"Hinge state is unavailable"}'),
+              ]),
+            );
+          } catch {}
+        }
+        break;
+      }
       case 0x11: {
         const requestId =
           data.length === 1 ? undefined : json<{ requestId?: unknown }>()?.requestId;
@@ -1947,7 +2003,7 @@ export class DeviceSession {
       // @ref LLP 0004#live-pose-observation — eligibility orders native samples against successful sends
       const eligibility =
         needsPose && this.observedDeviceState !== undefined
-          ? await this.hid.hingeControlEligibility()
+          ? ((await this.hid.hingeControlEligibility()) ?? {})
           : { hingeAngle: this.hingeAngle, physicalOrientation: this.hingePhysicalOrientation };
       if (!this.canRunInputControl(generation)) return false;
       if (
@@ -2702,6 +2758,7 @@ export class DeviceSession {
     keyboardUnavailable: boolean;
     screenId?: number;
     supportsHingeAngle?: boolean;
+    supportsHingeStateReadback?: boolean;
     supportsPhysicalOrientation?: boolean;
     hingeAngle?: number;
     hingePose?: HingePose | null;
@@ -2723,7 +2780,10 @@ export class DeviceSession {
         ? { supportsPhysicalOrientation: this.supportsPhysicalOrientation }
         : {}),
       ...(this.supportsHingeAngle !== undefined
-        ? { supportsHingeAngle: this.supportsHingeAngle }
+        ? {
+            supportsHingeAngle: this.supportsHingeAngle,
+            supportsHingeStateReadback: this.supportsHingeAngle,
+          }
         : {}),
       ...(this.hingeAngle !== undefined ? { hingeAngle: this.hingeAngle } : {}),
       ...(this.supportsHingeAngle
