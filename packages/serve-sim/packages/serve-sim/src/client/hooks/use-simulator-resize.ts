@@ -72,16 +72,10 @@ export function useSimulatorResize({
       const raw = window.localStorage.getItem(SIMULATOR_RESIZE_SCALE_STORAGE_KEY);
       scale = raw != null ? Number(raw) : NaN;
     } catch {}
-    return restoredSimulatorFrameWidth(
-      defaultWidth,
-      viewportWidth,
-      viewportHeight,
-      aspectRatio,
-      scale,
-      reservedForChrome,
-    );
-  }, [aspectRatio, defaultWidth, reservedForChrome, viewportHeight, viewportWidth]);
+    return restoredSimulatorFrameWidth(defaultWidth, 0, 0, aspectRatio, scale, reservedForChrome);
+  }, [aspectRatio, defaultWidth, reservedForChrome]);
   const initialWidth = useMemo(() => readRestoredWidth(), [readRestoredWidth]);
+  // Keep the chosen width independent of temporary panel/viewport constraints.
   const [frameWidth, setFrameWidth] = useState<number | null>(initialWidth);
   const lastWidthRef = useRef<number | null>(initialWidth);
   const restoredDefaultWidthRef = useRef(defaultWidth);
@@ -117,8 +111,8 @@ export function useSimulatorResize({
       const clamped = clampSimulatorFrameWidth(
         value,
         defaultWidth,
-        viewportWidth,
-        viewportHeight,
+        dragStartRef.current ? viewportWidth : 0,
+        dragStartRef.current ? viewportHeight : 0,
         aspectRatio,
         reservedForChrome,
       );
@@ -142,32 +136,6 @@ export function useSimulatorResize({
     },
     [persistNow],
   );
-
-  // Re-clamp on viewport / device change, but never while a drag or inertia is in flight —
-  // that would fight rubber-band overshoot.
-  useEffect(() => {
-    if (isResizing || isInertia) return;
-    const current = lastWidthRef.current;
-    if (current == null) return;
-    const next = clampSimulatorFrameWidth(
-      current,
-      defaultWidth,
-      viewportWidth,
-      viewportHeight,
-      aspectRatio,
-      reservedForChrome,
-    );
-    if (next !== current) writeWidth(next);
-  }, [
-    aspectRatio,
-    defaultWidth,
-    isInertia,
-    isResizing,
-    reservedForChrome,
-    viewportHeight,
-    viewportWidth,
-    writeWidth,
-  ]);
 
   useEffect(() => {
     if (restoredDefaultWidthRef.current === defaultWidth) return;
@@ -253,13 +221,14 @@ export function useSimulatorResize({
   const beginDrag = useCallback(
     (pointerId: number, clientX: number, clientY: number) => {
       cancelTween();
-      const startWidth = lastWidthRef.current ?? defaultWidth;
+      const startWidth = committedWidth;
+      writeWidth(startWidth);
       dragStartRef.current = { pointerId, startX: clientX, startY: clientY, startWidth };
       samplesRef.current = [{ t: performance.now(), x: startWidth }];
       onStart();
       setIsResizing(true);
     },
-    [cancelTween, defaultWidth, onStart],
+    [cancelTween, committedWidth, onStart, writeWidth],
   );
 
   const endDrag = useCallback(() => {

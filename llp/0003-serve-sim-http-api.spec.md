@@ -138,7 +138,9 @@ this server's interfaces, not independently launched servers or host tools
 ## Preview layout
 
 The preview centers the simulator within the area between docked panels, and
-uses that same width for its resize limits. Below the desktop breakpoint,
+uses that same width for its resize limits. Panel constraints do not overwrite
+the chosen frame width or its persisted scale; closing the panel restores that
+width unless the user resized it. Below the desktop breakpoint,
 panels overlay the preview and do not change its horizontal padding. A panel
 also overlays when docking it would leave less than the minimum simulator width
 plus its page gutters. Presentation mode uses the full viewport. Soft-keyboard
