@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "fs";
+import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
 
@@ -90,7 +91,9 @@ function loggedArgv(): string[][] {
 async function argv(action: string, params?: Record<string, unknown>): Promise<string[]> {
   const result = await runHostActionAsync(
     params === undefined ? { action } : { action, params },
-    serveSimBin,
+    action === "app.install"
+      ? fileURLToPath(new URL("../../dist/serve-sim.js", import.meta.url))
+      : serveSimBin,
   );
   expect(result.exitCode).toBe(0);
   return result.stdout.trimEnd().split("\n");

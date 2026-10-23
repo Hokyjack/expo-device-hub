@@ -2,11 +2,14 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { create, Header } from "tar";
 import { runHostActionAsync } from "../host-actions";
 import { UPLOAD_DIR } from "../host-paths";
 import { UDID, installShims, withActionTimeoutAsync } from "./helpers";
+const BIN = fileURLToPath(new URL("../../dist/serve-sim.js", import.meta.url));
 let root: string;
 let shims: ReturnType<typeof installShims>;
 beforeAll(async () => {
@@ -31,7 +34,7 @@ async function app(name = "My App.app") {
   return path;
 }
 async function install(path: string) {
-  return runHostActionAsync({ action: "app.install", params: { udid: UDID, path } }, "unused");
+  return runHostActionAsync({ action: "app.install", params: { udid: UDID, path } }, BIN);
 }
 async function archive(name: string, paths: string[]) {
   const file = join(root, name);
@@ -79,20 +82,17 @@ test("rejects an extensionless staged ZIP upload before invoking simctl", async 
         data: Buffer.from([0x50, 0x4b, 0x03, 0x04]).toString("base64"),
       },
     },
-    "unused",
+    BIN,
   );
   process.env.SERVE_SIM_INSTALL_STARTED = started;
   try {
     expect(
-      await runHostActionAsync(
-        { action: "app.install", params: { udid: UDID, uploadId } },
-        "unused",
-      ),
+      await runHostActionAsync({ action: "app.install", params: { udid: UDID, uploadId } }, BIN),
     ).toMatchObject({ exitCode: 1, stderr: expect.stringContaining("Simulator installs require") });
     expect(existsSync(started)).toBe(false);
   } finally {
     delete process.env.SERVE_SIM_INSTALL_STARTED;
-    await runHostActionAsync({ action: "upload.remove", params: { uploadId } }, "unused");
+    await runHostActionAsync({ action: "upload.remove", params: { uploadId } }, BIN);
   }
 });
 test("installs tar.gz and extensionless uploaded archives, preserving executable bits and cleaning extraction", async () => {
@@ -257,7 +257,7 @@ test.each(["uploadId", "path"])(
         action: "upload.append",
         params: { uploadId, first: true, data: bytes.toString("base64") },
       },
-      "unused",
+      BIN,
     );
     process.env.SERVE_SIM_INSTALL_SLEEP = "0.1";
     try {
@@ -271,12 +271,9 @@ test.each(["uploadId", "path"])(
             [source]: source === "path" ? join(UPLOAD_DIR, uploadId) : uploadId,
           },
         },
-        "unused",
+        BIN,
       );
-      const removed = runHostActionAsync(
-        { action: "upload.remove", params: { uploadId } },
-        "unused",
-      );
+      const removed = runHostActionAsync({ action: "upload.remove", params: { uploadId } }, BIN);
       const results = await Promise.all([first, pending, removed]);
       expect(
         results.map((result) => result.exitCode),
@@ -288,3 +285,118 @@ test.each(["uploadId", "path"])(
     }
   },
 );
+
+async function rawArchive(
+  name: string,
+  entries: Array<{
+    path: string;
+    type?: "File" | "Directory" | "SymbolicLink" | "Link";
+    body?: string;
+    target?: string;
+    mode?: number;
+  }>,
+  gzip = true,
+) {
+  const blocks: Buffer[] = [];
+  for (const entry of entries) {
+    const body = Buffer.from(entry.body ?? "");
+    const header = new Header({
+      path: entry.path,
+      type: entry.type ?? "File",
+      size: body.length,
+      mode: entry.mode ?? 0o755,
+      linkpath: entry.target,
+    });
+    header.encode();
+    blocks.push(Buffer.from(header.block!), body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  const bytes = Buffer.concat([...blocks, Buffer.alloc(1024)]);
+  const file = join(root, name);
+  await writeFile(file, gzip ? gzipSync(bytes) : bytes);
+  return file;
+}
+const bundleEntries = [
+  { path: "Framework.app/Info.plist", body: "test app" },
+  { path: "Framework.app/App", body: "executable" },
+];
+
+test.each([false, true])(
+  "installs versioned framework links independent of order: %s",
+  async (reverse) => {
+    const prefix = "Framework.app/Frameworks/F.framework";
+    const links = [
+      { path: `${prefix}/Versions/Current`, type: "SymbolicLink" as const, target: "A" },
+      { path: `${prefix}/F`, type: "SymbolicLink" as const, target: "Versions/Current/F" },
+    ];
+    if (reverse) links.reverse();
+    const archive = await rawArchive("framework.tgz", [
+      ...bundleEntries,
+      { path: `${prefix}/Versions/A/F`, body: "framework" },
+      ...links,
+    ]);
+    const result = await install(archive);
+    expect(result.exitCode, result.stderr).toBe(0);
+  },
+);
+
+test("rejects a link chain escaping extraction before invoking simctl", async () => {
+  const started = join(root, "chain-install-started");
+  process.env.SERVE_SIM_INSTALL_STARTED = started;
+  try {
+    const result = await install(
+      await rawArchive("chain.tgz", [
+        ...bundleEntries,
+        { path: "Framework.app/a/b/c/data", body: "fixture" },
+        { path: "Framework.app/a/b/c/s", type: "SymbolicLink", target: "../../.." },
+        { path: "Framework.app/a/b/c/t", type: "SymbolicLink", target: "s/../../canary" },
+      ]),
+    );
+    expect(result).toMatchObject({ exitCode: 1, stderr: expect.stringContaining("unsafe link") });
+    expect(existsSync(started)).toBe(false);
+  } finally {
+    delete process.env.SERVE_SIM_INSTALL_STARTED;
+  }
+});
+
+test("rejects plain tar renamed to tar.gz", async () => {
+  const result = await install(await rawArchive("plain.tar.gz", bundleEntries, false));
+  expect(result).toMatchObject({
+    exitCode: 1,
+    stderr: expect.stringContaining("Simulator installs require"),
+  });
+});
+
+test("many pending entries cannot race rejected-link cleanup or hide its error", async () => {
+  for (let iteration = 0; iteration < 5; iteration++) {
+    const before = await readdir(tmpdir());
+    const result = await install(
+      await rawArchive("many-files.tgz", [
+        ...bundleEntries,
+        ...Array.from({ length: 300 }, (_, i) => ({ path: `Framework.app/f${i}`, body: "x" })),
+        { path: "Framework.app/bad", type: "SymbolicLink", target: "/outside" },
+      ]),
+    );
+    expect(result).toMatchObject({ exitCode: 1, stderr: expect.stringContaining("unsafe link") });
+    expect(
+      (await readdir(tmpdir())).filter(
+        (name) => name.startsWith("serve-sim-app-install-") && !before.includes(name),
+      ),
+    ).toEqual([]);
+  }
+});
+
+test("an archive cannot make its extraction root writable by other users", async () => {
+  const checking = installShims({ xcrun: '#!/bin/sh\nstat -f "%Lp" "$4/.."\n' });
+  try {
+    const result = await install(
+      await rawArchive("root-mode.tgz", [
+        { path: ".", type: "Directory", mode: 0o777 },
+        ...bundleEntries,
+      ]),
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("700");
+  } finally {
+    checking.restore();
+  }
+});

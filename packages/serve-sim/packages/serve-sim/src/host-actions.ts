@@ -756,7 +756,8 @@ function fileSourcePath(p: { uploadId: string } | { path: string }): string {
 async function runProcedureAsync(
   action: ProcedureAction,
   raw: unknown,
-  streamSettings?: StreamSettings,
+  streamSettings: StreamSettings | undefined,
+  serveSimBinPath: string,
 ): Promise<HostActionResult> {
   switch (action) {
     case "clipboard.read":
@@ -822,9 +823,9 @@ async function runProcedureAsync(
       const deadline = Date.now() + actionTimeoutMs();
       // Acquire the staging queue before the install queue; neither installer acquires them in reverse.
       return uploadId === undefined
-        ? await installAppAsync(p.udid, path, deadline)
+        ? await installAppAsync(p.udid, path, deadline, serveSimBinPath)
         : await readStagedUploadAsync(uploadId, (source) =>
-            installAppAsync(p.udid, source, deadline),
+            installAppAsync(p.udid, source, deadline, serveSimBinPath),
           );
     }
     case "app.launch": {
@@ -1024,7 +1025,7 @@ export async function runHostActionAsync(
     throw new InvalidHostActionError(`unknown action ${String(action)}`);
   }
   const result = isProcedureAction(action)
-    ? await runProcedureAsync(action, params, streamSettings)
+    ? await runProcedureAsync(action, params, streamSettings, binPath)
     : await runInvocation(buildInvocation(action, params, binPath));
   // exec-ws spreads this straight into the reply, so only the three fields the page reads leave
   // the process. `timedOut` steers the message a handler composes; the page has no use for it.

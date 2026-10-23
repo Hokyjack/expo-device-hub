@@ -426,10 +426,18 @@ gzip header are also refused, including extensionless staged ZIP uploads.
 
 Archives extract into a private temporary directory, preserving executable bits.
 Traversal, external links and special files are refused. Expanded contents are
-limited to 2 GiB and 100,000 entries. Archive installs are serialized and share one
-action deadline across queueing, extraction and installation. Temporary contents
-are removed after success or failure. The uploaded source remains until the client
-removes it with `upload.remove`.
+limited to 2 GiB and 100,000 entries. Install preparation runs in a killable CLI
+child, including source inspection, so a FIFO cannot block the serving process's
+filesystem pool. Installs are serialized and share one action deadline across
+queueing, preparation and installation. The parent waits for preparation to exit
+before removing temporary contents in a cleanup child, with at most one additional
+second for cleanup after the action deadline. Cleanup failures retain the original
+error and add a cleanup warning.
+
+Links are resolved as a complete graph before creation, independently of archive
+order; entries through link paths and conflicting entries are rejected.
+Directories remain owner-only, and executable owner bits are preserved. The
+uploaded source remains until the client removes it with `upload.remove`.
 
 ### Uploading an app fixture
 
