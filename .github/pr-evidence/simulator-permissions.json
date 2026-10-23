@@ -63,9 +63,7 @@
         "launchCount": 1
       }
     ],
-    "springboard": [
-      "26758\t0\tcom.apple.SpringBoard"
-    ],
+    "springboard": ["26758\t0\tcom.apple.SpringBoard"],
     "delivery": "Local notifications delivered under grants and blocked after denial/reset. App and SpringBoard PIDs stayed unchanged."
   },
   "manual": "Hub Revoke then the app request returned denied; Hub Reset all then the app request showed the system prompt. Allow and local delivery succeeded with the same app PID and launch count. Browser streamed-screen input was also exercised.",
@@ -73,10 +71,7 @@
   "reviews": {
     "rounds": 7,
     "tasks": 10,
-    "providers": [
-      "Codex",
-      "Claude"
-    ],
+    "providers": ["Codex", "Claude"],
     "summary": "Actionable findings fixed. Last native, rewritten-hook and admission-order reviews found no remaining code issue in their scope. Human review pending."
   },
   "limits": [
