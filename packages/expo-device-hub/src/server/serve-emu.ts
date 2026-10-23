@@ -11,8 +11,8 @@ import {
 import { listAndroidEmulators } from "./devices";
 import {
   SERVER_SINGLE_DEVICE,
-  filterSessionDevices,
-  sessionEmuRequest,
+  isSessionDevice,
+  scopeEmuRequest,
   singleDeviceRefusal,
   refuseSingleDeviceSocket,
 } from "./single-device";
@@ -55,7 +55,9 @@ const androidSession = new AndroidSession(router, async () => {
   const listed = await listAndroidEmulators();
   return {
     ...listed,
-    devices: filterSessionDevices({ simulators: [], emulators: listed.devices }).emulators,
+    devices: listed.devices.filter((device) =>
+      isSessionDevice(SERVER_SINGLE_DEVICE, device.platform, device.id),
+    ),
   };
 });
 
@@ -78,7 +80,7 @@ process.once("exit", () => {
 });
 
 export function handleEmuRequest(request: Request): Promise<Response> {
-  const scoped = sessionEmuRequest(request);
+  const scoped = scopeEmuRequest(request);
   if (!scoped) return Promise.resolve(singleDeviceRefusal());
   request = scoped;
   const url = new URL(request.url);
@@ -88,7 +90,7 @@ export function handleEmuRequest(request: Request): Promise<Response> {
 }
 
 async function attachEmuSocket(socket: EmuSocket, request: Request): Promise<void> {
-  const scoped = sessionEmuRequest(request);
+  const scoped = scopeEmuRequest(request);
   if (!scoped) {
     refuseSingleDeviceSocket(socket);
     return;

@@ -1,8 +1,8 @@
-import { dashboardSingleDevice } from "../single-device";
 import { type DeviceStreamMode } from "@expo/hub-client";
 import { type Device, type StreamModeAvailability } from "@expo/hub-components";
 import { create } from "zustand";
 
+import { dashboardSingleDevice } from "../single-device";
 import { dashboardHideSidebar } from "../sidebar";
 import { dashboardTransport } from "../transport";
 import { browserStreamModeAvailability, resolveStreamMode } from "./streamMode";

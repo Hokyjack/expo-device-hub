@@ -151,7 +151,8 @@ Clipboard fallbacks belong to the selected device and are discarded on a selecti
 ## Single-device sessions
 
 The standalone Hub accepts `--platform ios|android --single-device <id>`; iOS
-requires a simulator UUID and Android requires an adb serial. The server
+requires a simulator UUID and Android requires an adb serial. Like the other
+standalone CLI options, its environment setting is ignored in plugin mode. The server
 propagates that startup identity to the backend and shell. Device discovery and
 agent activity expose only that ID. The dashboard does not mount its left
 sidebar, toggle, creation picker or delete action, and a missing device does not

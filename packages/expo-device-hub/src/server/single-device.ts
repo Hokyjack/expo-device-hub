@@ -1,5 +1,5 @@
 // @ref LLP 0013#single-device-sessions — session target and layout contract
-import type { PlatformFilter } from "../platform-filter";
+import { type PlatformFilter, parsePlatformFilter } from "../platform-filter";
 import type { HubDeviceList } from "./devices";
 
 export type SingleDevice = { platform: PlatformFilter; id: string };
@@ -23,12 +23,24 @@ export function parseSingleDevice(
   return { platform, id };
 }
 
-export const SERVER_SINGLE_DEVICE = parseSingleDevice(
-  process.env.EXPO_DEVICE_HUB_SINGLE_DEVICE,
-  process.env.EXPO_DEVICE_HUB_PLATFORM as PlatformFilter | undefined,
-);
+export function readSingleDevice(
+  env: Record<string, string | undefined>,
+): SingleDevice | undefined {
+  if (env.EXPO_DEVICE_HUB_BASE_PATH !== "") return undefined;
+  return parseSingleDevice(
+    env.EXPO_DEVICE_HUB_SINGLE_DEVICE,
+    parsePlatformFilter(env.EXPO_DEVICE_HUB_PLATFORM),
+  );
+}
 
-export function isSessionDevice(policy: SingleDevice, platform: string, id: string): boolean {
+export const SERVER_SINGLE_DEVICE = readSingleDevice(process.env);
+
+export function isSessionDevice(
+  policy: SingleDevice | undefined,
+  platform: string,
+  id: string,
+): boolean {
+  if (policy === undefined) return true;
   return platform === policy.platform && (platform === "ios" ? id.toUpperCase() : id) === policy.id;
 }
 
@@ -45,7 +57,7 @@ export function filterSessionDevices(
 }
 
 /** Android's fleet actions accept targets in JSON, independently of ?device=. */
-export function sessionEmuRequest(request: Request, policy = SERVER_SINGLE_DEVICE): Request | null {
+export function scopeEmuRequest(request: Request, policy = SERVER_SINGLE_DEVICE): Request | null {
   if (!policy) return request;
   if (policy.platform !== "android") return null;
   const url = new URL(request.url);

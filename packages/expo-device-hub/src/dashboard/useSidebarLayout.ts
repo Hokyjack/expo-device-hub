@@ -1,6 +1,6 @@
-import { dashboardSingleDevice } from "../single-device";
 import { useEffect, useRef, useState } from "react";
 
+import { dashboardSingleDevice } from "../single-device";
 import { type SidebarPreference, useDashboardStore } from "./dashboardStore";
 
 type SidebarLayoutOptions = {

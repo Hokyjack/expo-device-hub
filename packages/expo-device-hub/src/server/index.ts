@@ -9,7 +9,6 @@
  * so it must be known server-side (see ./serve-sim.ts).
  */
 
-import { SERVER_SINGLE_DEVICE, isSessionDevice, singleDeviceRefusal } from "./single-device";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -58,6 +57,7 @@ import {
   withBearerToken,
 } from "./session-auth";
 import { FRAME_ANCESTORS, SESSION_TOKEN } from "./session-token";
+import { SERVER_SINGLE_DEVICE, isSessionDevice, singleDeviceRefusal } from "./single-device";
 import { SERVER_HIDE_SIDEBAR } from "./sidebar";
 import { listNewDeviceOptions } from "./sim-options";
 import { SERVER_TRANSPORT } from "./transport";
