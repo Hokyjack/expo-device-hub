@@ -210,7 +210,7 @@ function nativePermission<T = unknown>(udid: string, ...args: string[]): T {
   }
 }
 
-function sqlite(dbPath: string, sql: string): string {
+export function readPermissionDatabase(dbPath: string, sql: string): string {
   return execFileSync("sqlite3", ["-readonly", dbPath, sql], { encoding: "utf-8", timeout: 5000 });
 }
 
@@ -224,7 +224,7 @@ function readTcc(udid: string, bundleId?: string): Record<string, number> {
   const db = tccDbPath(udid);
   if (!existsSync(db)) return {};
   const where = bundleId ? ` WHERE client='${bundleId}'` : "";
-  const out = sqlite(db, `SELECT service, auth_value FROM access${where};`);
+  const out = readPermissionDatabase(db, `SELECT service, auth_value FROM access${where};`);
   const result: Record<string, number> = {};
   for (const line of out.split("\n")) {
     const [service, authValue] = line.split("|");
