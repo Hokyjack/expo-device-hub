@@ -87,22 +87,29 @@ test.each(["js", "ts"])(
   },
 );
 
-test("cleanup uses the remaining action budget for a slow removal", async () => {
-  const shims = installShims({
-    xcrun: "#!/bin/sh\nexit 0\n",
-    prepare: '#!/bin/sh\nprintf \'"%s"\\n\' "$2"\n',
-    rm: '#!/bin/sh\nsleep 1.2\nexec /bin/rm "$@"\n',
-  });
-  try {
-    const result = await installAppAsync(
-      UDID,
-      "/unused",
-      Date.now() + 4000,
-      join(shims.dir, "prepare"),
-    );
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toBe("");
-  } finally {
-    shims.restore();
-  }
-});
+test.each([
+  ["cleanup gets grace after the action deadline", 1.2, 1000],
+  ["cleanup uses remaining action time beyond its minimum grace", 11.2, 20_000],
+] as const)(
+  "%s",
+  async (_name, delay, budgetMs) => {
+    const shims = installShims({
+      xcrun: "#!/bin/sh\nexit 0\n",
+      prepare: '#!/bin/sh\nprintf \'"%s"\\n\' "$2"\n',
+      rm: `#!/bin/sh\nsleep ${delay}\nexec /bin/rm "$@"\n`,
+    });
+    try {
+      const result = await installAppAsync(
+        UDID,
+        "/unused",
+        Date.now() + budgetMs,
+        join(shims.dir, "prepare"),
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+    } finally {
+      shims.restore();
+    }
+  },
+  25_000,
+);

@@ -99,8 +99,8 @@
   "dependencies": {
     "inspect-webkit": "^0.0.5",
     "sonner": "^2.0.7",
-    "ws": "^8.21.0",
-    "tar": "7.5.19"
+    "tar": "7.5.19",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/bun": "latest",
