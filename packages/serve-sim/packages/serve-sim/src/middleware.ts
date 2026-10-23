@@ -1,3 +1,9 @@
+import { getScreenshotDisplayIdsAsync } from "./screenshot-display";
+import {
+  captureScreenshotFileAsync,
+  ScreenshotDisplay,
+  SCREENSHOT_DISPLAY_CHANGED,
+} from "./screenshot-store";
 import { openSseStream } from "./sse-stream";
 import { parseCaptureProxy } from "./capture/upstream";
 import { execFile, execSync } from "child_process";
@@ -49,6 +55,7 @@ import { corsAllowOriginHeaders, frameAncestorsPolicy, isAllowedOrigin } from ".
 import {
   closeDeviceSession,
   getDeviceSession,
+  withScreenshotDeviceSession,
   peekDeviceSession,
   retainDeviceSession,
   withDeviceSessionTask,
@@ -2794,21 +2801,36 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
         res.end(JSON.stringify({ ok: false, error: "No booted simulator to screenshot" }));
         return;
       }
-      // simctl only writes to a file, so round-trip through a private tmp path
-      // instead of streaming; captures are a few MB at most.
+      const displayValue = new URL(rawUrl, "http://localhost").searchParams.get("display");
+      const display =
+        displayValue === null ? undefined : ScreenshotDisplay.safeParse(Number(displayValue));
+      if (display && !display.success) {
+        res.writeHead(400, { "Cache-Control": "no-store", "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Invalid simulator display ID" }));
+        return;
+      }
+      udid = udid.toUpperCase();
+      // HTTP downloads avoid staging and Desktop copies, but share panel election.
       const file = join(tmpdir(), `serve-sim-screenshot-${randomBytes(8).toString("hex")}.png`);
       try {
-        await new Promise<void>((resolve, reject) => {
-          execFile(
-            "xcrun",
-            ["simctl", "io", udid, "screenshot", file],
-            { timeout: 5_000 },
-            (err, _stdout, stderr) => {
-              if (err) reject(Object.assign(err, { stderr: stderr?.toString() }));
-              else resolve();
-            },
-          );
-        });
+        const screenId = display?.data;
+        const capture = (id: number, read?: () => Promise<number>) =>
+          captureScreenshotFileAsync({ udid, file, display: id, timeoutMs: 5_000 }, read);
+        const result =
+          screenId !== undefined
+            ? await capture(screenId)
+            : await withScreenshotDeviceSession(udid, streamSettings, async (session) => {
+                const read = () => session.activeScreenId();
+                return await capture(await read(), read);
+              }).catch(async (error) => {
+                // A sole integrated display needs no native panel election. Never
+                // fall back on an unknown profile or a multi-display device.
+                if (!(await getBootedUdids())?.has(udid)) throw error;
+                const ids = await getScreenshotDisplayIdsAsync(udid);
+                if (ids?.length !== 1) throw error;
+                return await capture(ids[0]!);
+              });
+        if (result.exitCode !== 0) throw new Error(result.stderr || "simctl screenshot failed");
         const png = await readFile(file);
         const artifact = await saveScreenshotArtifact(png);
         recordScreenshotEvent(udid, artifact);
@@ -2835,7 +2857,15 @@ export function simMiddleware(options?: SimMiddlewareOptions): SimMiddleware {
           "Cache-Control": "no-store",
           "Content-Type": "application/json",
         });
-        res.end(JSON.stringify({ ok: false, error: message }));
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error:
+              message === SCREENSHOT_DISPLAY_CHANGED
+                ? SCREENSHOT_DISPLAY_CHANGED
+                : "Simulator screenshot failed",
+          }),
+        );
       } finally {
         // Best-effort cleanup; the PNG is already in memory by now.
         await unlink(file).catch(() => {});

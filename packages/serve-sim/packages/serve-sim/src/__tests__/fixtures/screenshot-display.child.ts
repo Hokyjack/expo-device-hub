@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, expect, mock, test } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as fsPromises from "fs/promises";
@@ -160,6 +160,31 @@ test("removes unconfirmed pixels and the reservation when the post-capture query
     stderr: expect.stringContaining("Could not determine the active display"),
   });
   expect(existsSync(join(tmpdir(), "serve-sim-screenshots", names.at(-1)!))).toBe(false);
+});
+
+test("publication failure removes an empty reservation and keeps existing validated pixels", async () => {
+  active = 1;
+  expect((await capture()).exitCode).toBe(0);
+  const existingName = names.at(-1)!;
+  const directory = join(tmpdir(), "serve-sim-screenshots");
+  const existingPath = join(directory, existingName);
+  const previous = readFileSync(existingPath, "utf8");
+  const before = readdirSync(directory).filter((name) => name.startsWith(".capture-"));
+  const noOutput = installShims({ xcrun: "#!/bin/sh\nexit 0\n" });
+  try {
+    const failed = await capture();
+    expect(failed.exitCode).toBe(1);
+    expect(failed.stderr).toBe(
+      "Could not capture the screenshot. Check the host logs for details.",
+    );
+    expect(existsSync(join(directory, names.at(-1)!))).toBe(false);
+    const replaced = await capture({ fileName: existingName });
+    expect(replaced.exitCode).toBe(1);
+    expect(readFileSync(existingPath, "utf8")).toBe(previous);
+    expect(readdirSync(directory).filter((name) => name.startsWith(".capture-"))).toEqual(before);
+  } finally {
+    noOutput.restore();
+  }
 });
 
 test("keeps the simctl failure and skips a second display query", async () => {
