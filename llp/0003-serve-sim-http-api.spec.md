@@ -675,7 +675,7 @@ app did not fix it. The app's normal `requestAuthorization` call then returned
 success without a prompt, and local delivery worked without a restart. Subsequent
 live grant, denial and reset changes worked with the app and SpringBoard processes
 unchanged. [observed: native runtime experiment, 2026-10-23; recorded limitation in
-`.github/pr-evidence/simulator-permissions.json`]
+[local permission validation](https://github.com/expo/expo-device-hub/pull/447#issuecomment-6377205261)]
 
 No service-only initialization fix has been validated. Setting `pushSettings` to
 63 did not fix the fresh-app scheduling failure; that negative result must not be
@@ -683,7 +683,7 @@ treated as a working initialization recipe or copied into production. A fresh ap
 may still need its normal authorization request before notifications can be
 delivered. This is an unresolved support boundary, not proof that initialization
 can never be controlled externally. [observed: native runtime experiment,
-2026-10-23; `.github/pr-evidence/simulator-permissions.json`]
+2026-10-23; [local permission validation](https://github.com/expo/expo-device-hub/pull/447#issuecomment-6377205261)]
 
 The browser's Granted state therefore describes authorization only. The fresh
 pre-grant runtime test deliberately makes the app's normal request before checking
