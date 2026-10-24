@@ -79,7 +79,7 @@ test("keeps an explicit keyboard resize made beside an open panel", async () => 
   expect(Number(storage.get(SIMULATOR_RESIZE_SCALE_STORAGE_KEY))).toBe(436 / 320);
 });
 
-test("starts a pointer resize from the visible constrained size", async () => {
+test("commits a pointer resize from the visible constrained size", async () => {
   await render(508);
   await act(async () =>
     model.onPointerDown({
@@ -103,10 +103,29 @@ test("starts a pointer resize from the visible constrained size", async () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
   expect(model.width).toBe(436);
+  windowEvents.dispatchEvent(new Event("pagehide"));
+  expect(Number(storage.get(SIMULATOR_RESIZE_SCALE_STORAGE_KEY))).toBe(436 / 320);
+  // A final stationary sample leaves no release momentum.
+  await new Promise((resolve) => setTimeout(resolve, 170));
+  await act(async () => {
+    model.onPointerMove({
+      pointerId: 1,
+      clientX: -24,
+      clientY: 0,
+      preventDefault() {},
+      stopPropagation() {},
+    } as never);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  await act(async () =>
+    model.onPointerEnd({ pointerId: 1, preventDefault() {}, stopPropagation() {} } as never),
+  );
+  await render(1280);
+  expect(model.width).toBe(436);
 });
 
-for (const sendStationaryMove of [false, true]) {
-  test(`a handle click preserves the preference (stationary move: ${sendStationaryMove})`, async () => {
+for (const pointerMotion of ["none", "stationary", "out-and-back"] as const) {
+  test(`a no-op pointer gesture preserves the preference (${pointerMotion})`, async () => {
     await render(1280);
     await render(508);
     const event = {
@@ -120,7 +139,13 @@ for (const sendStationaryMove of [false, true]) {
     };
     await act(async () => model.onPointerDown(event as never));
     expect(model.width).toBe(460);
-    if (sendStationaryMove) {
+    if (pointerMotion === "out-and-back") {
+      await act(async () => {
+        model.onPointerMove({ ...event, clientX: -24 } as never);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    if (pointerMotion !== "none") {
       await act(async () => {
         model.onPointerMove(event as never);
         await new Promise((resolve) => setTimeout(resolve, 20));

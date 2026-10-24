@@ -33,7 +33,7 @@ type DragStart = {
   startX: number;
   startY: number;
   startWidth: number;
-  changed: boolean;
+  currentWidth: number;
 };
 
 type Sample = { t: number; x: number };
@@ -54,8 +54,8 @@ export function useSimulatorResize({
   onStart: () => void;
 }) {
   const reducedMotion = usePrefersReducedMotion();
-  const [isResizing, setIsResizing] = useState(false);
-  const [hasResized, setHasResized] = useState(false);
+  const [dragWidth, setDragWidth] = useState<number | null>(null);
+  const isResizing = dragWidth !== null;
   const [isInertia, setIsInertia] = useState(false);
   const [handleHovered, setHandleHovered] = useState(false);
   const dragStartRef = useRef<DragStart | null>(null);
@@ -65,7 +65,7 @@ export function useSimulatorResize({
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleRef = useRef<HTMLDivElement | null>(null);
 
-  const readRestoredWidth = useCallback(() => {
+  const readPreferredWidth = useCallback(() => {
     if (typeof window === "undefined") return defaultWidth;
     // A non-finite scale (storage threw / empty / NaN) falls back to defaultWidth
     // inside restoredSimulatorFrameWidth, so both paths share one call.
@@ -76,10 +76,10 @@ export function useSimulatorResize({
     } catch {}
     return restoredSimulatorFrameWidth(defaultWidth, 0, 0, aspectRatio, scale, reservedForChrome);
   }, [aspectRatio, defaultWidth, reservedForChrome]);
-  const initialWidth = useMemo(() => readRestoredWidth(), [readRestoredWidth]);
+  const initialPreferredWidth = useMemo(() => readPreferredWidth(), [readPreferredWidth]);
   // @ref LLP 0003#preview-layout — constrain display size without erasing the preferred width
-  const [frameWidth, setFrameWidth] = useState<number | null>(initialWidth);
-  const lastWidthRef = useRef<number | null>(initialWidth);
+  const [preferredWidth, setPreferredWidth] = useState<number | null>(initialPreferredWidth);
+  const preferredWidthRef = useRef<number | null>(initialPreferredWidth);
   const restoredDefaultWidthRef = useRef(defaultWidth);
 
   const maxWidth = getSimulatorFrameMaxWidth(
@@ -91,7 +91,7 @@ export function useSimulatorResize({
   );
   const minWidth = Math.min(SIMULATOR_RESIZE_MIN_WIDTH, maxWidth);
 
-  const width = frameWidth ?? defaultWidth;
+  const width = dragWidth ?? preferredWidth ?? defaultWidth;
   const committedWidth = clampSimulatorFrameWidth(
     width,
     defaultWidth,
@@ -101,20 +101,22 @@ export function useSimulatorResize({
     reservedForChrome,
   );
 
-  const writeWidth = useCallback((next: number) => {
+  const writePreferredWidth = useCallback((next: number) => {
     const rounded = roundToDevicePixel(next);
-    lastWidthRef.current = rounded;
-    setFrameWidth(rounded);
+    preferredWidthRef.current = rounded;
+    setPreferredWidth(rounded);
   }, []);
 
   const persistNow = useCallback(
     (value: number) => {
       if (typeof window === "undefined" || defaultWidth <= 0) return;
+      const drag = dragStartRef.current;
+      const changed = drag !== null && drag.currentWidth !== drag.startWidth;
       const clamped = clampSimulatorFrameWidth(
         value,
         defaultWidth,
-        dragStartRef.current?.changed ? viewportWidth : 0,
-        dragStartRef.current?.changed ? viewportHeight : 0,
+        changed ? viewportWidth : 0,
+        changed ? viewportHeight : 0,
         aspectRatio,
         reservedForChrome,
       );
@@ -142,8 +144,8 @@ export function useSimulatorResize({
   useEffect(() => {
     if (restoredDefaultWidthRef.current === defaultWidth) return;
     restoredDefaultWidthRef.current = defaultWidth;
-    writeWidth(readRestoredWidth());
-  }, [defaultWidth, readRestoredWidth, writeWidth]);
+    writePreferredWidth(readPreferredWidth());
+  }, [defaultWidth, readPreferredWidth, writePreferredWidth]);
 
   useEffect(() => {
     if (!isResizing && !isInertia) return;
@@ -164,7 +166,11 @@ export function useSimulatorResize({
   useEffect(() => {
     if (typeof window === "undefined") return;
     const flush = () => {
-      const w = lastWidthRef.current;
+      const drag = dragStartRef.current;
+      const w =
+        drag && drag.currentWidth !== drag.startWidth
+          ? drag.currentWidth
+          : preferredWidthRef.current;
       if (w == null) return;
       if (persistTimerRef.current != null) {
         clearTimeout(persistTimerRef.current);
@@ -214,16 +220,13 @@ export function useSimulatorResize({
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null;
         const drag = dragStartRef.current;
-        if (!drag || (!drag.changed && roundToDevicePixel(display) === drag.startWidth)) return;
-        if (!drag.changed) {
-          drag.changed = true;
-          setHasResized(true);
-        }
-        writeWidth(display);
-        recordSample(display);
+        if (!drag) return;
+        drag.currentWidth = roundToDevicePixel(display);
+        setDragWidth(drag.currentWidth);
+        recordSample(drag.currentWidth);
       });
     },
-    [displayWidthFromRaw, recordSample, writeWidth],
+    [displayWidthFromRaw, recordSample],
   );
 
   const beginDrag = useCallback(
@@ -235,12 +238,11 @@ export function useSimulatorResize({
         startX: clientX,
         startY: clientY,
         startWidth,
-        changed: false,
+        currentWidth: startWidth,
       };
-      setHasResized(false);
+      setDragWidth(startWidth);
       samplesRef.current = [{ t: performance.now(), x: startWidth }];
       onStart();
-      setIsResizing(true);
     },
     [cancelTween, committedWidth, onStart],
   );
@@ -253,19 +255,19 @@ export function useSimulatorResize({
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
-    if (start && start.pointerId >= 0) {
+    if (start.pointerId >= 0) {
       const handle = handleRef.current;
       if (handle?.hasPointerCapture(start.pointerId)) {
         handle.releasePointerCapture(start.pointerId);
       }
     }
-    setIsResizing(false);
-    if (!start.changed) {
+    setDragWidth(null);
+    if (start.currentWidth === start.startWidth) {
       samplesRef.current = [];
       return;
     }
 
-    const fromDisplay = lastWidthRef.current ?? defaultWidth;
+    const fromDisplay = start.currentWidth;
     const velocity = estimateReleaseVelocity(samplesRef.current);
     samplesRef.current = [];
 
@@ -284,11 +286,12 @@ export function useSimulatorResize({
     // Under reduced-motion, or when there's nothing meaningful to animate, snap directly.
     const trivial = Math.abs(fromDisplay - target) < 0.5 && Math.abs(velocity) < 8;
     if (reducedMotion || trivial) {
-      writeWidth(target);
+      writePreferredWidth(target);
       schedulePersist(target);
       return;
     }
 
+    writePreferredWidth(fromDisplay);
     setIsInertia(true);
     tweenCancelRef.current = springTo({
       from: fromDisplay,
@@ -296,7 +299,7 @@ export function useSimulatorResize({
       velocity,
       stiffness: SIMULATOR_RESIZE_SPRING_STIFFNESS,
       damping: SIMULATOR_RESIZE_SPRING_DAMPING,
-      onUpdate: writeWidth,
+      onUpdate: writePreferredWidth,
       onComplete: () => {
         tweenCancelRef.current = null;
         setIsInertia(false);
@@ -311,7 +314,7 @@ export function useSimulatorResize({
     schedulePersist,
     viewportHeight,
     viewportWidth,
-    writeWidth,
+    writePreferredWidth,
   ]);
 
   useEffect(() => {
@@ -320,7 +323,7 @@ export function useSimulatorResize({
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       if (persistTimerRef.current != null) {
         clearTimeout(persistTimerRef.current);
-        if (lastWidthRef.current != null) persistNow(lastWidthRef.current);
+        if (preferredWidthRef.current != null) persistNow(preferredWidthRef.current);
       }
     };
   }, [cancelTween, persistNow]);
@@ -407,7 +410,11 @@ export function useSimulatorResize({
           reservedForChrome,
         ),
       );
-      writeWidth(next);
+      if (dragStartRef.current) {
+        dragStartRef.current.currentWidth = next;
+        setDragWidth(next);
+      }
+      writePreferredWidth(next);
       schedulePersist(next);
     },
     [
@@ -419,14 +426,13 @@ export function useSimulatorResize({
       viewportHeight,
       viewportWidth,
       reservedForChrome,
-      writeWidth,
+      writePreferredWidth,
     ],
   );
 
   return {
     handleRef,
-    width:
-      isResizing && !hasResized ? committedWidth : isResizing || isInertia ? width : committedWidth,
+    width: isResizing || isInertia ? width : committedWidth,
     committedWidth,
     minWidth,
     maxWidth,
